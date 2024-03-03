@@ -10,10 +10,11 @@ import wandb
 from wandb_utils import download_latest_checkpoint, rewrite_checkpoint_for_compatibility
 from omegaconf import DictConfig, OmegaConf
 
-import pytorch_lightning as pl
-from pytorch_lightning.loggers.wandb import WandbLogger
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from pytorch_lightning.strategies.ddp import DDPStrategy
+import lightning as L
+import lightning.pytorch as pl
+from lightning.pytorch.loggers.wandb import WandbLogger
+from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
+from lightning.pytorch.strategies.ddp import DDPStrategy
 
 def run(cfg: DictConfig):
     # Set up dataset and dataloader
@@ -78,13 +79,13 @@ def run(cfg: DictConfig):
             ]
 
     # Initialize Pytorch Lightning trainer
-    trainer = pl.Trainer(
+    trainer = L.Trainer(
         max_epochs=-1,
         accelerator='auto',
         logger=logger,
         devices="auto",
         callbacks=callbacks,
-        strategy=DDPStrategy(find_unused_parameters=False, gradient_as_bucket_view=True), 
+        strategy="ddp",#"fsdp_native",#DDPFullyShardedStrategy(), 
         precision=cfg.training.precision,
         check_val_every_n_epoch=cfg.validation.check_epoch,
         val_check_interval=cfg.validation.check_interval,

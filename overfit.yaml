@@ -3,12 +3,14 @@ name: overfit
 wandb:
     mode: dryrun
     name: test
-    project: soft_flow
+    project: diffusion_control
+model:
+    three_frames: true
 dataset:
     split: validation
     idx: 0
-    imsz: 256,128
-    imsz_super: 1024,512
+    imsz: 512,218
+    imsz_super: 1024,436
 training:
     precision: 32
     data:

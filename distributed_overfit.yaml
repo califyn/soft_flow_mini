@@ -1,0 +1,26 @@
+name: overfit
+
+wandb:
+    mode: dryrun
+    name: test
+    project: diffusion_control
+dataset:
+    split: validation
+    idx: 15
+    imsz: 256,128
+    imsz_super: 512,256
+training:
+    precision: 32
+    data:
+        batch_size: 1
+        shuffle: false
+    overfit_batch: 1
+    lr: 5e-2
+    weight_decay: 0.0
+validation:
+    check_epoch: 50
+    limit_batch: 1
+    check_interval: 1
+    data:
+        batch_size: 1
+        shuffle: false
