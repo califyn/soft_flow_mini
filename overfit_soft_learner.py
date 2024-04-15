@@ -12,7 +12,7 @@ from torchvision.models.optical_flow import raft_large
 from smurf import raft_smurf
 
 from soft_losses import *
-from soft_utils import flow_from_weights, filter_to_image, flow_to_filter, warp_previous_flow
+from soft_utils import flow_from_weights, filter_to_image, flow_to_filter, warp_previous_flow, pad_for_filter
 from softsplat_downsample import softsplat
 
 class SoftMultiFramePredictor(torch.nn.Module):
@@ -50,6 +50,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
         weights = weights.to(in_frames.device)
         grid = self.grid.to(in_frames.device)
 
+        """
         t = self.weight_sl//2 # smaller t for padding
         in_shape = in_frames.shape
         in_frames_reshaped = torch.reshape(in_frames, (in_frames.shape[0] * in_frames.shape[1], in_frames.shape[2], in_frames.shape[3], in_frames.shape[4]))
@@ -57,6 +58,8 @@ class SoftMultiFramePredictor(torch.nn.Module):
         x_padded = torch.reshape(x_padded, (in_shape[0], in_shape[1], *x_padded.shape[1:]))
         x_padded = x_padded.unfold(3, self.weight_sl + self.downsample_factor - 1, self.downsample_factor).unfold(4, self.weight_sl + self.downsample_factor - 1, self.downsample_factor)  # extract 30x30 patches around each pixel
         # should be perfect downsampling now
+        """
+        x_padded = pad_for_filter(in_frames, self.weight_sl, self.downsample_factor)
 
         # For each pixel in the input frame, compute the weighted sum of its neighborhood
         out = torch.einsum('bnijkl, bncijkl->bncij', weights, x_padded)
@@ -95,7 +98,7 @@ class OverfitSoftLearner(L.LightningModule):
         super().__init__()
 
         self.cfg = cfg
-        self.downsample_factor = 2
+        self.downsample_factor = 4
         self.set_model = True
         self.three_frames = cfg.model.three_frames
 
@@ -124,14 +127,17 @@ class OverfitSoftLearner(L.LightningModule):
         else:
             mult_factor = torch.ones_like(outputs["out"])
 
+        """
         if self.three_frames:
-            #loss = criterion_three_frames(outputs["out"] * mult_factor, targets["out"] * mult_factor)
-            loss = criterion(outputs["out"] * mult_factor, targets["out"] * mult_factor)
+            loss = criterion_three_frames(outputs["out"] * mult_factor, targets["out"] * mult_factor)
+            #loss = criterion(outputs["out"] * mult_factor, targets["out"] * mult_factor)
         else:
             loss = criterion(outputs["out"] * mult_factor, targets["out"] * mult_factor)
+        """
+        loss = distribution_photometric(outputs['weights'], outputs['input'], targets['out'], self.model.weight_sl, self.model.downsample_factor)
 
-        #temp_smooth_reg = temporal_smoothness_loss(outputs['positions'])
-        # loss += temp_smooth_reg
+        temp_smooth_reg = temporal_smoothness_loss(outputs['positions'])
+        loss += 1e-2 * temp_smooth_reg
 
         if occ_mask is not None:
             occ_mask = occ_mask.float()
@@ -182,11 +188,14 @@ class OverfitSoftLearner(L.LightningModule):
 
         # this part only works with 2 frames
         if self.three_frames:
+            """
             swap_flows = torch.flip(outputs["positions"] - target["positions"], dims=[1]).permute(0, 1, 4, 2, 3).float()
             swap_flows = torch.reshape(swap_flows, (swap_flows.shape[0] * 2, *swap_flows.shape[2:]))
             occ_mask = softsplat(torch.zeros_like(-swap_flows), -swap_flows, None, strMode="sum")[:, -1, None] # self occ
             occ_mask = torch.reshape(occ_mask, (occ_mask.shape[0] // 2, 2, *occ_mask.shape[1:]))
             occ_mask = (occ_mask > 1.2).detach()
+            """
+            occ_mask = None
         else:
             occ_mask = None
 
@@ -260,7 +269,7 @@ class OverfitSoftLearner(L.LightningModule):
             frame2_up_round = torchvision.transforms.functional.resize(frame2_up, (8 * math.ceil(frame2_up.shape[2] / 8), 8 * math.ceil(frame2_up.shape[3] / 8)))
             frame3_up_round = torchvision.transforms.functional.resize(frame3_up, (8 * math.ceil(frame3_up.shape[2] / 8), 8 * math.ceil(frame3_up.shape[3] / 8)))
             
-            if min(frame2_round.shape[2], frame2_round.shape[3]) <= 56: # too small bugs out raft
+            if min(frame2_round.shape[2], frame2_round.shape[3]) <= 128: # too small bugs out raft
                 raft_pred = torch.zeros_like(frame2_round)[:, :2]
             else:
                 raft_pred = raft(frame2_round, frame3_round)[-1]
@@ -289,6 +298,7 @@ class OverfitSoftLearner(L.LightningModule):
             raft_epe_full = compute_epe(gt_flow_orig, raft_pred_full)
             smurf_epe_full = compute_epe(gt_flow_orig, smurf_pred_full)
 
+            """
             if self.three_frames:
                 swap_flows = torch.flip(outputs["positions"] - target_outputs["positions"], dims=[1]).permute(0, 1, 4, 2, 3).float()
                 swap_flows = torch.reshape(swap_flows, (swap_flows.shape[0] * 2, *swap_flows.shape[2:]))
@@ -296,12 +306,14 @@ class OverfitSoftLearner(L.LightningModule):
                 occ_mask = torch.reshape(occ_mask, (occ_mask.shape[0] // 2, 2, *occ_mask.shape[1:]))
                 occ_mask = occ_mask[:, -1]
                 occ_mask = (occ_mask > 1.2).detach()
+                occ_mask = None
                 occ_epe = float('nan')
             else:
-                occ_mask = softsplat(torch.zeros_like(gt_flow_orig), gt_flow_orig, None, strMode="sum")[:, -1, None]
-                occ_mask = occ_mask > 1.5
-                masked_gt_flow_orig = torch.where(occ_mask.repeat(1, 2, 1, 1), torch.full_like(gt_flow_orig, float('nan')), gt_flow_orig)
-                occ_epe = compute_epe(masked_gt_flow_orig, fwd_flows[-1] + tgt_flows[-1])
+            """
+            occ_mask = softsplat(torch.zeros_like(gt_flow_orig), gt_flow_orig, None, strMode="sum")[:, -1, None]
+            occ_mask = occ_mask > 1.5
+            masked_gt_flow_orig = torch.where(occ_mask.repeat(1, 2, 1, 1), torch.full_like(gt_flow_orig, float('nan')), gt_flow_orig)
+            occ_epe = compute_epe(masked_gt_flow_orig, fwd_flows[-1] + tgt_flows[-1])
 
             self.log_dict({
                 "val/loss": loss, # training loss

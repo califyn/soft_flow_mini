@@ -1,19 +1,19 @@
 import torch.distributions as dist
 import torch
-from soft_utils import warp_previous_flow
+from soft_utils import warp_previous_flow, pad_for_filter
 
 def entropy_loss(weight_softmax):
     entropy = -torch.mean(weight_softmax * torch.log(weight_softmax + 1e-8))
     return entropy
 
 def temporal_smoothness_loss(flow_fields):
-    expected_flow_t = warp_previous_flow(flow_fields)
+    #expected_flow_t = warp_previous_flow(flow_fields)
     # expected_flow_t = warp_previous_flow_multi(flow_fields)
 
-    flow_t_plus_1 = flow_fields[:, 1:].reshape(-1, *flow_fields.shape[2:])
-    flow_diffs = flow_t_plus_1 - expected_flow_t
-    loss = (flow_diffs ** 2).mean()
-    return loss
+    #flow_t_plus_1 = flow_fields[:, 1:].reshape(-1, *flow_fields.shape[2:])
+    #flow_diffs = flow_t_plus_1 - expected_flow_t
+    #loss = (flow_diffs ** 2).mean()
+    return torch.abs(flow_fields[:, 0] + flow_fields[:, 1]).mean()
 
 def spatial_smoothness_loss(weights, image=None, occ_mask=None, edge_weight=1, occ_weight=0.0):
     # Calculate the gradient along the height and width dimensions
@@ -78,3 +78,18 @@ def charbonnier(x, alpha=0.5, eps=1e-3):
 criterion = lambda x, y: torch.nanmean(charbonnier(x - y))
 criterion_min = lambda x, y: torch.mean(torch.min(charbonnier(x-y), dim=1, keepdim=True)[0]) # three frame min pixel loss
 criterion_three_frames = lambda x, y: criterion_min(x, y) + 5e-2 * criterion(x, y) # match pixel values if you can
+
+def distribution_photometric(weights, src, tgt, weight_sl, downsample_factor):
+    # image: (N, M, 3, Wbig, Hbig)
+    # weights: (N, M, Wfilt, Hfilt, Wsmall, Hsmall)
+    assert(src.shape[2] == 3)
+
+    src_padded = pad_for_filter(src, weight_sl, downsample_factor)
+    tgt_padded = tgt[..., None, None]
+
+    diff = torch.sum(charbonnier(src_padded - tgt_padded), dim=2)
+    loss = diff * weights
+
+    loss_per_pxl = loss.sum(dim=(4, 5))
+    return torch.nanmean(loss_per_pxl)
+

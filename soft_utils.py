@@ -1,5 +1,6 @@
 import torch
 import torchvision
+import torch.nn.functional as F
 
 def warp_previous_flow(flow_fields):
     batch_size, n_frames, height, width, _ = flow_fields.shape
@@ -86,3 +87,14 @@ def quiver_plot(flow):
         axs[5, i+1].set_title(f"Quiver Plot {i+2}")
         axs[5, i+1].set_aspect('equal')
 """
+
+def pad_for_filter(in_frames, weight_sl, downsample_factor):
+    t = weight_sl//2 # smaller t for padding
+    in_shape = in_frames.shape
+    in_frames_reshaped = torch.reshape(in_frames, (in_frames.shape[0] * in_frames.shape[1], in_frames.shape[2], in_frames.shape[3], in_frames.shape[4]))
+    x_padded = F.pad(in_frames_reshaped, (t, t, t, t), mode='replicate', value=0)
+    x_padded = torch.reshape(x_padded, (in_shape[0], in_shape[1], *x_padded.shape[1:]))
+    x_padded = x_padded.unfold(3, weight_sl + downsample_factor - 1, downsample_factor).unfold(4, weight_sl + downsample_factor - 1, downsample_factor)  
+
+    return x_padded
+
