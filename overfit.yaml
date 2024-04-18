@@ -5,12 +5,12 @@ wandb:
     name: test
     project: soft_flow
 model:
-    three_frames: true
+    three_frames: false
 dataset:
     split: validation
-    idx: 0
-    imsz: 256,109
-    imsz_super: 1024,436
+    idx: 0 
+    imsz: 64,27
+    imsz_super: 1024,432
 training:
     precision: 32
     data:

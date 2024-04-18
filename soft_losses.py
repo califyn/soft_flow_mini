@@ -1,6 +1,7 @@
 import torch.distributions as dist
 import torch
 from soft_utils import warp_previous_flow, pad_for_filter
+from tqdm import tqdm
 
 def entropy_loss(weight_softmax):
     entropy = -torch.mean(weight_softmax * torch.log(weight_softmax + 1e-8))
@@ -79,17 +80,92 @@ criterion = lambda x, y: torch.nanmean(charbonnier(x - y))
 criterion_min = lambda x, y: torch.mean(torch.min(charbonnier(x-y), dim=1, keepdim=True)[0]) # three frame min pixel loss
 criterion_three_frames = lambda x, y: criterion_min(x, y) + 5e-2 * criterion(x, y) # match pixel values if you can
 
-def distribution_photometric(weights, src, tgt, weight_sl, downsample_factor):
-    # image: (N, M, 3, Wbig, Hbig)
-    # weights: (N, M, Wfilt, Hfilt, Wsmall, Hsmall)
+def normal_minperblob(weights, src, tgt, weight_sl, downsample_factor, filter_zoom):
     assert(src.shape[2] == 3)
 
-    src_padded = pad_for_filter(src, weight_sl, downsample_factor)
-    tgt_padded = tgt[..., None, None]
+    if len(src.shape) == 5: # not made into filter-shapes yet
+        src_padded = pad_for_filter(src, weight_sl, downsample_factor)
 
-    diff = torch.sum(charbonnier(src_padded - tgt_padded), dim=2)
+    assert((weight_sl + downsample_factor - 1) % filter_zoom == 0)
+    true_sl = (weight_sl + downsample_factor - 1) // filter_zoom
+    src_padded = src_padded.reshape((*tuple(src_padded.shape)[:5], true_sl, filter_zoom, true_sl, filter_zoom))
+    tgt_padded = torch.broadcast_to(tgt[..., None, None, None, None], src_padded.shape)
+
+    diff = torch.zeros((*tuple(src_padded.shape)[:5], true_sl, true_sl)).to(src.device)
+    for i in range(true_sl): # reduce peak memory consumption
+        diff_slice = src_padded[..., i, None, :] - tgt_padded[..., i, None, :] # in place version of this has bugs??? ugh (probably these are views or something like that)
+
+        diff_slice = torch.permute(diff_slice, (0, 1, 2, 3, 4, 5, 7, 6, 8))
+        diff_slice = torch.reshape(diff_slice, (*tuple(diff_slice.shape)[:7], -1))
+
+        diff_abs = torch.abs(diff_slice) # b n c i j k k2 l l2
+        diff_abs = torch.sum(diff_abs, dim=2, keepdim=True)
+        _, diff_idx = torch.min(diff_abs, dim=-1)
+        diff_idx = torch.broadcast_to(diff_idx, tuple(diff_slice.shape)[:-1])[..., None]
+
+        diff_slice = torch.gather(diff_slice, -1, diff_idx)
+        diff[..., i] = diff_slice[..., 0, 0]
+    diff = torch.einsum('bnijkl, bncijkl->bncij', weights, diff)
+
+    #return criterion_three_frames(diff, torch.zeros_like(diff))
+    return criterion(diff, torch.zeros_like(diff)), _
+
+def distribution_photometric(weights, src, tgt, weight_sl, downsample_factor, filter_zoom):
+    # image: (N, M, 3, Wbig, Hbig)
+    # weights: (N, M, Wsmall, Hsmall, Wfilt, Hfilt)
+    assert(src.shape[2] == 3)
+    assert(downsample_factor == 1) # until this is perfected
+
+    if len(src.shape) == 5: # not made into filter-shapes yet
+        src_padded = pad_for_filter(src, weight_sl * filter_zoom, downsample_factor)
+    else:
+        src_padded = src
+
+    assert((weight_sl + downsample_factor - 1) % filter_zoom == 0)
+    true_sl = (weight_sl + downsample_factor - 1) // filter_zoom
+    src_padded = src_padded.reshape((*tuple(src_padded.shape)[:5], true_sl, filter_zoom, true_sl, filter_zoom))
+    tgt_padded = torch.broadcast_to(tgt[..., None, None, None, None], src_padded.shape)
+
+    diff = torch.zeros((*tuple(src_padded.shape)[:5], true_sl, true_sl)).to(src.device)
+    for i in range(true_sl): # reduce peak memory consumption
+        diff_slice = src_padded[..., i, None, :] - tgt_padded[..., i, None, :] # in place version of this has bugs??? ugh (probably these are views or something like that)
+        diff_slice = torch.square_(diff_slice)
+        diff_slice += 1e-6
+        diff_slice = torch.sqrt_(diff_slice)
+        diff_slice = torch.sum(diff_slice, dim=2)
+        diff_slice = torch.min(diff_slice, dim=5)[0]
+        diff_slice = torch.min(diff_slice, dim=6)[0]
+
+        diff[..., i] = diff_slice[..., 0]
+
     loss = diff * weights
-
     loss_per_pxl = loss.sum(dim=(4, 5))
-    return torch.nanmean(loss_per_pxl)
+
+    #src_padded[ b n c i j k k2 l l2]
+    #b n i j (k) (l)
+    # Compute restricted for downstream 
+    """
+    if filter_zoom > 1:
+        # Prep max indices
+        weights_, x_ind_ = torch.max(weights, dim=-1, keepdim=True)
+        _, y_ind = torch.max(weights_, dim=-2, keepdim=True)
+        x_ind = torch.gather(x_ind_, -2, y_ind)
+        mode_idx = y_ind * weight_sl + x_ind
+
+        # Reshape src for indexing
+        src_padded = src_padded.permute((0, 1, 2, 3, 4, 5, 7, 6, 8))
+        src_padded = src_padded.reshape((*tuple(src_padded.shape)[:5], weight_sl ** 2, filter_zoom, filter_zoom))
+
+        # Align shapes
+        mode_idx = mode_idx[..., 0]
+        mode_idx = torch.broadcast_to(mode_idx[:, :, None, :, :, :, None, None], src_padded.shape)
+        mode_idx = mode_idx[..., 0, None, :, :]
+
+        # Gather
+        small_src = torch.gather(src_padded, 5, mode_idx)[..., 0, :, :]
+    else:
+        small_src = None
+    """
+    small_src = None
+    return torch.nanmean(loss_per_pxl), small_src
 
