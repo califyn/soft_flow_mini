@@ -4,6 +4,7 @@ import argparse
 
 import torch
 from sintel_superres import SintelSuperResDataset
+from llff_superres import LLFFSuperResDataset
 from overfit_soft_learner import OverfitSoftLearner
 
 import wandb
@@ -18,7 +19,10 @@ from lightning.pytorch.strategies.ddp import DDPStrategy
 
 def run(cfg: DictConfig):
     # Set up dataset and dataloader
-    dataset = SintelSuperResDataset(cfg)
+    if cfg.dataset.dataset == "sintel":
+        dataset = SintelSuperResDataset(cfg)
+    elif cfg.dataset.dataset == "llff":
+        dataset = LLFFSuperResDataset(cfg)
     train_dataloader = torch.utils.data.DataLoader(
                 dataset,
                 batch_size=cfg.training.data.batch_size,

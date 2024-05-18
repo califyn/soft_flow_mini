@@ -48,12 +48,14 @@ class SoftMultiFramePredictor(torch.nn.Module):
         print('filter zoom approx max size, FIX THAT!!')
         print('filter zoom broke out, FIX THAT!!')
 
-    def forward(self, in_frames, weights=None):
+    def forward(self, in_frames, weights=None, temp=None):
         if weights is not None:
             weights = weights.flatten(start_dim=-2)
         else:
             weights = self.weights.flatten(start_dim=-2)
-        weights = F.softmax(weights, dim=-1).view_as(self.weights)
+        if temp is None:
+            temp = 1.
+        weights = F.softmax(weights * temp, dim=-1).view_as(self.weights)
 
         weights = weights.to(in_frames.device)
         grid = self.grid.to(in_frames.device)
@@ -76,10 +78,11 @@ class SoftMultiFramePredictor(torch.nn.Module):
         expected_norm = torch.einsum('bnijkl,kl->bnij', weights, grid.norm(dim=-1)) / self.downsample_factor  # Shape: [height, width, 2]
         expected_positions = expected_positions.flip(-1)
 
-        deviation = torch.sum(torch.square(expected_positions[:, :, :, :, None, None, :] - grid[None, None, None, None, :, :, :] / self.downsample_factor), dim=-1)
-        deviation = torch.sum(deviation * weights, dim=(4, 5))
+        #deviation = torch.sum(torch.square(expected_positions[:, :, :, :, None, None, :] - grid[None, None, None, None, :, :, :] / self.downsample_factor), dim=-1)
+        #deviation = torch.sum(deviation * weights, dim=(4, 5))
 
-        return {'out':out, 'positions': expected_positions, 'input':in_frames, 'weights':weights, 'exp_norm':expected_norm, 'var': deviation}
+        #return {'out':out, 'positions': expected_positions, 'input':in_frames, 'weights':weights, 'exp_norm':expected_norm, 'var': deviation}
+        return {'out':out, 'positions': expected_positions, 'input':in_frames, 'weights':weights, 'exp_norm':expected_norm}
 
     def set(self, idx, set_to):
         self.weights.data[:, idx] = torch.log(torch.maximum(set_to, torch.full_like(set_to, 1e-24)))
@@ -107,16 +110,23 @@ class OverfitSoftLearner(L.LightningModule):
         super().__init__()
 
         self.cfg = cfg
-        self.downsample_factor = 16
+        self.downsample_factor = cfg.model.downsample_factor
+        self.filter_zoom = cfg.model.filter_zoom
         self.set_model = True
         self.three_frames = cfg.model.three_frames
+        self.weight_sl = cfg.model.weight_sl
+
+        imsz_sm = [int(x) for x in cfg.dataset.imsz.split(",")]
+        imsz_lg = [int(x) for x in cfg.dataset.imsz_super.split(",")]
+        assert(imsz_sm[0] * self.downsample_factor == imsz_lg[0])
+        assert(imsz_sm[1] * self.downsample_factor == imsz_lg[1])
 
         if self.three_frames:
-            self.model = SoftMultiFramePredictor(cfg, 2, downsample_factor=self.downsample_factor, weight_sl=337, filter_zoom=16) # 123 for num. 11
+            self.model = SoftMultiFramePredictor(cfg, 2, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom) # 123 for num. 11
         else:
-            self.model = SoftMultiFramePredictor(cfg, 1, downsample_factor=self.downsample_factor, weight_sl=337, filter_zoom=16) # 123 for num. 11
+            self.model = SoftMultiFramePredictor(cfg, 1, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom) # 123 for num. 11
             #self.model = SoftMultiFramePredictor(cfg, 1, downsample_factor=self.downsample_factor, weight_sl=23, filter_zoom=1) # 123 for num. 11
-        self.low_model = SoftMultiFramePredictor(cfg, 2, downsample_factor=self.downsample_factor, weight_sl=3, filter_zoom=1)
+        #self.low_model = SoftMultiFramePredictor(cfg, 2, downsample_factor=self.downsample_factor, weight_sl=3, filter_zoom=1)
 
         #self.tgt_model = SoftMultiFramePredictor(cfg, self.model.n_frames, weight_sl=3) # filter for target image
         self.tgt_model = IdentityPredictor(cfg, 1, weight_sl=3) # no filters for target image
@@ -158,23 +168,24 @@ class OverfitSoftLearner(L.LightningModule):
 
         if occ_mask is not None:
             occ_mask = occ_mask.float()
-        spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=image, occ_mask=occ_mask)
-        loss += spat_smooth_reg * 5e1 #* (61/31) * (61/31) # for sintel
+        #spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=image, occ_mask=occ_mask)
+        spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=None, occ_mask=occ_mask) # no edge aware
+        loss += spat_smooth_reg * self.cfg.model.smoothness * (self.model.true_sl ** 2) # finally weighing this #2.8e4 #* (61/31) * (61/31) # for sintel
 
-        spat_smooth_reg = spatial_smoothness_loss(targets['weights'], image=targets["input"])
-        loss += spat_smooth_reg * 5e-0 # 100x smaller
+        #spat_smooth_reg = spatial_smoothness_loss(targets['weights'], image=targets["input"])
+        #loss += spat_smooth_reg * 5e-0 # 100x smaller
 
-        #spat_smooth_reg = position_spat_smoothness(outputs['positions'])
-        #loss += spat_smooth_reg * 0.002
+        spat_smooth_reg = position_spat_smoothness(outputs['positions'])
+        loss += spat_smooth_reg * self.cfg.model.pos_smoothness #2e-3
 
-        #norm_reg = outputs['exp_norm'].mean()
-        #loss += norm_reg * 1e-3
+        norm_reg = outputs['exp_norm'].mean()
+        loss += norm_reg * self.cfg.model.norm
 
         #norm_reg = targets['exp_norm'].mean()
         #loss += norm_reg * 1e-1
 
-        #entropy_reg = entropy_loss(outputs['weights'])
-        # loss += entropy_reg
+        entropy_reg = entropy_loss(outputs['weights'])
+        loss += entropy_reg * self.cfg.model.entropy
 
         #entropy_reg = entropy_loss(targets['weights'])
         #loss += entropy_reg * 1e-1
@@ -184,15 +195,26 @@ class OverfitSoftLearner(L.LightningModule):
 
         return loss
 
-    def check_filter_size(self, gt_flow):
-        if torch.max(torch.abs(gt_flow)) > self.model.max_size:
-            raise ValueError(f'GT flow is too large--max flow is {torch.max(torch.abs(gt_flow))} but max possible is {self.model.max_size}')
+    def check_filter_size(self, frame2, frame3, gt_flow):
+        flow_max = torch.max(torch.abs(gt_flow))
+        if flow_max == 0: # no gt flow
+            raft = raft_large(weights='C_T_V2')
+            raft.to(frame2.device)
+
+            mem_limit_scale = 1 / max(frame2.shape[2] / 1024, frame2.shape[3] / 1024, 1) # scale down for memory limits
+            frame2_round = torchvision.transforms.functional.resize(frame2, (8 * math.ceil(frame2.shape[2] / 8 * mem_limit_scale), 8 * math.ceil(frame2.shape[3] / 8 * mem_limit_scale)))
+            frame3_round = torchvision.transforms.functional.resize(frame3, (8 * math.ceil(frame3.shape[2] / 8 * mem_limit_scale), 8 * math.ceil(frame3.shape[3] / 8 * mem_limit_scale)))
+            gt_flow = raft(frame2_round, frame3_round)[-1]
+
+            flow_max = torch.max(torch.abs(gt_flow)) / (mem_limit_scale * self.downsample_factor)
+        if flow_max > self.model.max_size:
+            raise ValueError(f'GT flow is too large--max flow is {flow_max} but max possible is {self.model.max_size}')
         else:
-            pass
+            return flow_max
 
     def training_step(self, batch, batch_idx):
         frame1, frame2, frame3, gt_flow, frame1_up, frame2_up, frame3_up, gt_flow_orig = batch
-        self.check_filter_size(gt_flow)
+        #self.check_filter_size(frame2_up, frame3_up, gt_flow)
 
         if self.three_frames:
             outputs = self.model(torch.stack((frame1_up, frame3_up), dim=1))
@@ -235,7 +257,7 @@ class OverfitSoftLearner(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         frame1, frame2, frame3, gt_flow, frame1_up, frame2_up, frame3_up, gt_flow_orig = batch
-        self.check_filter_size(gt_flow)
+        flow_max = self.check_filter_size(frame2_up, frame3_up, gt_flow)
 
         raft = raft_large(weights='C_T_V2')
         raft.to(frame2.device)
@@ -250,21 +272,27 @@ class OverfitSoftLearner(L.LightningModule):
         with torch.no_grad():
             if self.three_frames:
                 outputs = self.model(torch.stack((frame1_up, frame3_up), dim=1))
+                outputs_100 = self.model(torch.stack((frame1_up, frame3_up), dim=1), temp=100)
             else:
                 outputs = self.model(frame3_up[:, None])
+                outputs_100 = self.model(frame3_up[:, None], temp=100)
 
             target_outputs = self.tgt_model(frame2[:, None])
             fwd_flows = [(outputs["positions"] - target_outputs["positions"])[:, -1].permute(0, 3, 1, 2).float()]
+            fwd_flows_100 = [(outputs_100["positions"] - target_outputs["positions"])[:, -1].permute(0, 3, 1, 2).float()]
             if self.three_frames:
                 bwd_flows = [(outputs["positions"] - target_outputs["positions"])[:, 0].permute(0, 3, 1, 2).float()]
             else:
                 bwd_flows = [torch.zeros_like(fwd_flows[-1]).float()]
             tgt_flows = [target_outputs["positions"][:, -1].permute(0, 3, 1, 2).float()]
-            print(f'Max flow: {torch.max(torch.abs(gt_flow))}, max pred flow: {torch.max(torch.abs(fwd_flows[-1]))}')
+            print(f'Max flow: {flow_max}, max pred flow: {torch.max(torch.abs(fwd_flows[-1]))}')
 
             loss = self.loss(outputs, target_outputs, occ_mask=None, image=frame2[:, None])
+
+            checksum = torch.sum(self.model.weights)
             with torch.set_grad_enabled(True):
-                weights = self.model.weights.detach().clone()
+                #weights = self.model.weights.detach().clone()
+                weights = self.model.weights
                 weights.requires_grad_(True)
                 outputs_grad = self.model(frame3_up[:, None], weights=weights)
 
@@ -280,12 +308,14 @@ class OverfitSoftLearner(L.LightningModule):
                     grad_bwd_flow = torch.zeros_like(bwd_flows[-1])
 
                 weights.grad = None
-                weights.requires_grad_(False)
+                #weights.requires_grad_(False)
+            assert(torch.abs(torch.sum(self.model.weights) - checksum) == 0.0)
 
+            mem_limit_scale = 1 / max(frame2_up.shape[2] / 1024, frame2_up.shape[3] / 1024, 1) # scale down for memory limits
             frame2_round = torchvision.transforms.functional.resize(frame2, (8 * math.ceil(frame2.shape[2] / 8), 8 * math.ceil(frame2.shape[3] / 8)))
             frame3_round = torchvision.transforms.functional.resize(frame3, (8 * math.ceil(frame3.shape[2] / 8), 8 * math.ceil(frame3.shape[3] / 8)))
-            frame2_up_round = torchvision.transforms.functional.resize(frame2_up, (8 * math.ceil(frame2_up.shape[2] / 8), 8 * math.ceil(frame2_up.shape[3] / 8)))
-            frame3_up_round = torchvision.transforms.functional.resize(frame3_up, (8 * math.ceil(frame3_up.shape[2] / 8), 8 * math.ceil(frame3_up.shape[3] / 8)))
+            frame2_up_round = torchvision.transforms.functional.resize(frame2_up, (8 * math.ceil(frame2_up.shape[2] / 8 * mem_limit_scale), 8 * math.ceil(frame2_up.shape[3] / 8 * mem_limit_scale)))
+            frame3_up_round = torchvision.transforms.functional.resize(frame3_up, (8 * math.ceil(frame3_up.shape[2] / 8 * mem_limit_scale), 8 * math.ceil(frame3_up.shape[3] / 8 * mem_limit_scale)))
             
             if min(frame2_round.shape[2], frame2_round.shape[3]) <= 128: # too small bugs out raft
                 raft_pred = torch.zeros_like(frame2_round)[:, :2]
@@ -312,7 +342,13 @@ class OverfitSoftLearner(L.LightningModule):
             # EPE at resolution
             raft_epe = compute_epe(gt_flow_orig, raft_pred)
             smurf_epe = compute_epe(gt_flow_orig, smurf_pred)
+
+            if torch.max(torch.abs(gt_flow_orig)) == 0.0:
+                gt_flow_orig = raft_pred_full
+                gt_flow = torch.nn.functional.interpolate(raft_pred_full, size=(frame2.shape[2], frame2.shape[3]))
+                gt_flow = gt_flow / self.downsample_factor
             epe_full = compute_epe(gt_flow_orig, fwd_flows[-1])
+            mode_epe_full = compute_epe(gt_flow_orig, fwd_flows_100[-1])
             raw_epe_full = compute_epe(gt_flow_orig, fwd_flows[-1] + tgt_flows[-1]) # original epe
             raft_epe_full = compute_epe(gt_flow_orig, raft_pred_full)
             smurf_epe_full = compute_epe(gt_flow_orig, smurf_pred_full)
@@ -343,11 +379,12 @@ class OverfitSoftLearner(L.LightningModule):
                 "val/raft_epe_full": raft_epe_full, # EPE between (1) RAFT with full resolution f2, f3 as input (2) full resolution flow
                 "val/smurf_epe_full": smurf_epe_full, # EPE between (1) SMURF with full resolution f2, f3 as input (2) full resolution flow
                 "val/occ_epe": occ_epe,
-                "val/var_mean": torch.mean(outputs["var"])
             }, sync_dist=True)
             print(epe_full)
+            #"val/var_mean": torch.mean(outputs["var"])
 
             fwd_flow = fwd_flows[-1]
+            fwd_flow_100 = fwd_flows_100[-1]
             bwd_flow = bwd_flows[-1]
             tgt_flow = tgt_flows[-1]
             target = target_outputs["out"][:, 0]
@@ -356,6 +393,7 @@ class OverfitSoftLearner(L.LightningModule):
             warped_imgs_fwd = outputs["out"][:, -1]
 
             fwd_flows = torchvision.utils.flow_to_image(fwd_flow) / 255 * torch.max(frame2)
+            fwd_flows_100 = torchvision.utils.flow_to_image(fwd_flow_100) / 255 * torch.max(frame2)
             bwd_flows = torchvision.utils.flow_to_image(bwd_flow) / 255 * torch.max(frame2)
             gt_flows = torchvision.utils.flow_to_image(gt_flow) / 255 * torch.max(frame2)
             diff_flows = torchvision.utils.flow_to_image(fwd_flow - gt_flow) / 255 * torch.max(frame2)
@@ -378,6 +416,7 @@ class OverfitSoftLearner(L.LightningModule):
             fwd_warped = torch.cat((frame2, frame3, warped_imgs_fwd, 0.5 + 0.5 * (warped_imgs_fwd - frame2)), dim=3)
             fwd_warped_flow = torch.cat((frame2, frame3, warped_imgs_flow, 0.5 + 0.5 * (warped_imgs_flow - frame2)), dim=3)
             gt_fwd = torch.cat((gt_flows, fwd_flows), dim=3)
+            gt_fwd_100 = torch.cat((gt_flows, fwd_flows_100), dim=3)
             gt_fwd_raft = torch.cat((torchvision.transforms.functional.resize(gt_flows, (raft_pred.shape[2], raft_pred.shape[3])), raft_pred), dim=3)
             gt_fwd_raft_full = torch.cat((torchvision.transforms.functional.resize(gt_flows, (raft_pred_full.shape[2], raft_pred_full.shape[3])), raft_pred_full), dim=3)
             gt_fwd_smurf = torch.cat((torchvision.transforms.functional.resize(gt_flows, (smurf_pred.shape[2], smurf_pred.shape[3])), smurf_pred), dim=3)
@@ -393,6 +432,7 @@ class OverfitSoftLearner(L.LightningModule):
             self.logger.log_image(key='fwd_warped_flow', images=self.chunk(fwd_warped_flow), step=self.global_step) # f2, f3, then f3 backward warped with the predicted flow onto f2
             self.logger.log_image(key='target', images=self.chunk(target), step=self.global_step) # f2 after target filter, f2, and the difference between the two
             self.logger.log_image(key='gt_fwd_flow', images=self.chunk(gt_fwd), step=self.global_step) # gt forward flow (downscaled), predicted flow
+            self.logger.log_image(key='gt_fwd_flow_100', images=self.chunk(gt_fwd_100), step=self.global_step) # gt forward flow (downscaled), predicted flow
             self.logger.log_image(key='gt_raft', images=self.chunk(gt_fwd_raft), step=self.global_step) # gt forward flow (downscaled), RAFT output with downscaled inputs
             self.logger.log_image(key='gt_raft_full', images=self.chunk(gt_fwd_raft_full), step=self.global_step) # gt forward flow (full resolution), RAFT output with full resolution inputs
             self.logger.log_image(key='gt_smurf', images=self.chunk(gt_fwd_smurf), step=self.global_step) # gt forward flow (downscaled), RAFT output with downscaled inputs
@@ -403,7 +443,7 @@ class OverfitSoftLearner(L.LightningModule):
             self.logger.log_image(key='filters', images=self.chunk(filters), step=self.global_step) # visualizing the filters inside the soft flow (1 filter shown per 32x32 pixels)
             self.logger.log_image(key='target_filters', images=self.chunk(target_filters), step=self.global_step) # visualizing the filters inside the target soft flow
             self.logger.log_image(key='exp_norm', images=self.chunk(outputs['exp_norm'][:, -1, None].repeat(1,3,1,1)), step=self.global_step) # grayscale image of the expected norm of the flow
-            self.logger.log_image(key='var', images=self.chunk(outputs['var'][:, -1, None].repeat(1,3,1,1)), step=self.global_step) # grayscale image of the expected norm of the flow
+            #self.logger.log_image(key='var', images=self.chunk(outputs['var'][:, -1, None].repeat(1,3,1,1)), step=self.global_step) # grayscale image of the expected norm of the flow
             self.logger.log_image(key='occ_mask', images=self.chunk(occ_mask_vis), step=self.global_step) # grayscale image of the expected norm of the flow
 
 

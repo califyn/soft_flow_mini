@@ -6,21 +6,31 @@ wandb:
     project: soft_flow
 model:
     three_frames: false
+    weight_sl: 61 #933
+    downsample_factor: 8 #32 #16
+    filter_zoom: 1 #4
+    smoothness: 1e-1 # 6e-1
+    pos_smoothness: 2e-2 
+    frameskip: 1
+    norm: 0.0
+    entropy: 1e2
 dataset:
+    dataset: llff
     split: validation
-    idx: 0 
-    imsz: 64,27
-    imsz_super: 1024,432
+    idx: 50
+    imsz: 240,135 #252,189 #64,27
+    imsz_super: 1920,1080 #4032,3008 #2016,1516 #4032,3024 #1024,432
+    subset: horns
 training:
     precision: 32
     data:
         batch_size: 1
         shuffle: false
     overfit_batch: 1
-    lr: 5e-2
+    lr: 5e-1
     weight_decay: 0.0
 validation:
-    check_epoch: 50
+    check_epoch: 15
     limit_batch: 1
     check_interval: 1
     data:
