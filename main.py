@@ -5,6 +5,7 @@ import argparse
 import torch
 from sintel_superres import SintelSuperResDataset
 from llff_superres import LLFFSuperResDataset
+from pokemon_superres import PokemonSuperResDataset
 from overfit_soft_learner import OverfitSoftLearner
 
 import wandb
@@ -23,6 +24,8 @@ def run(cfg: DictConfig):
         dataset = SintelSuperResDataset(cfg)
     elif cfg.dataset.dataset == "llff":
         dataset = LLFFSuperResDataset(cfg)
+    elif cfg.dataset.dataset == "pokemon":
+        dataset = PokemonSuperResDataset(cfg)
     train_dataloader = torch.utils.data.DataLoader(
                 dataset,
                 batch_size=cfg.training.data.batch_size,

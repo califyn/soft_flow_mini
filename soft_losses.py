@@ -16,6 +16,14 @@ def temporal_smoothness_loss(flow_fields):
     #loss = (flow_diffs ** 2).mean()
     return torch.abs(flow_fields[:, 0] + flow_fields[:, 1]).mean()
 
+def full_temporal_smoothness_loss(weights):
+    assert(weights.shape[1] == 2)
+    past = torch.flip(weights[:, 0], (-1, -2))
+    future = weights[:, 1]
+
+    loss = torch.abs(past - future).mean()
+    return loss
+
 def spatial_smoothness_loss(weights, image=None, occ_mask=None, edge_weight=1, occ_weight=0.0):
     # Calculate the gradient along the height and width dimensions
     grad_height = weights[:, :, 1:, :, :, :] - weights[:, :, :-1, :, :, :]
@@ -76,11 +84,15 @@ def position_spat_smoothness(positions):
 def charbonnier(x, alpha=0.5, eps=1e-3):
     return torch.pow(torch.square(x) + eps**2, alpha)
 
-criterion = lambda x, y: torch.nanmean(charbonnier(x - y))
-criterion_min = lambda x, y: torch.mean(torch.min(charbonnier(x-y), dim=1, keepdim=True)[0]) # three frame min pixel loss
-criterion_three_frames = lambda x, y: criterion_min(x, y) + 5e-2 * criterion(x, y) # match pixel values if you can
+def flat_charbonnier(x, alpha=0.5, eps=1e-3, flat=1e-1):
+    x = torch.maximum(torch.abs(x), torch.Tensor([flat]).to(x.device)) - flat
+    return charbonnier(x, alpha=alpha, eps=eps)
 
-def normal_minperblob(weights, src, tgt, weight_sl, downsample_factor, filter_zoom):
+criterion = lambda x, y, f: torch.nanmean(flat_charbonnier(x - y, flat=f))
+criterion_min = lambda x, y, f: torch.mean(torch.min(flat_charbonnier(x-y, flat=f), dim=1, keepdim=True)[0]) # three frame min pixel loss
+criterion_three_frames = lambda x, y, f: criterion_min(x, y, f) + 0 * criterion(x, y, f) # match pixel values if you can
+
+def normal_minperblob(weights, src, tgt, weight_sl, downsample_factor, filter_zoom, flatness=0.0):
     assert(src.shape[2] == 3)
 
     if len(src.shape) == 5: # not made into filter-shapes yet
@@ -107,8 +119,11 @@ def normal_minperblob(weights, src, tgt, weight_sl, downsample_factor, filter_zo
         diff[..., i] = diff_slice[..., 0, 0]
     diff = torch.einsum('bnijkl, bncijkl->bncij', weights, diff)
 
-    #return criterion_three_frames(diff, torch.zeros_like(diff))
-    return criterion(diff, torch.zeros_like(diff)), _
+    if src.shape[1] == 2:
+        return criterion_three_frames(diff, torch.zeros_like(diff), flatness), _
+        #return criterion(diff, torch.zeros_like(diff)), _
+    else:
+        return criterion(diff, torch.zeros_like(diff), flatness), _
 
 def distribution_photometric(weights, src, tgt, weight_sl, downsample_factor, filter_zoom):
     # image: (N, M, 3, Wbig, Hbig)

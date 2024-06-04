@@ -6,20 +6,24 @@ wandb:
     project: soft_flow
 model:
     three_frames: false
-    weight_sl: 61 #933
-    downsample_factor: 8 #32 #16
+    weight_sl: 31 #61 #933
+    downsample_factor: 2 #4 #32
     filter_zoom: 1 #4
-    smoothness: 1e-1 # 6e-1
-    pos_smoothness: 2e-2 
+    smoothness: 2e-1 #1e-1 # 6e-1
+    pos_smoothness: 0 #2e-2 
     frameskip: 1
     norm: 0.0
-    entropy: 1e2
+    entropy: 0.0 #1e2
+    cost_method: feats
+    feat_dim: 15 #32 #28 #128
+    temp: 9
+    charbonnier_flatness: 0.0
 dataset:
-    dataset: llff
+    dataset: pokemon #sintel #llff 
     split: validation
-    idx: 50
-    imsz: 240,135 #252,189 #64,27
-    imsz_super: 1920,1080 #4032,3008 #2016,1516 #4032,3024 #1024,432
+    idx: 0 #14 #27
+    imsz: 256,256 #252,189 #240,135 #64,27
+    imsz_super: 512,512 #1008,756 #4032,3024 #1920,1080 #4032,3008 #2016,1516
     subset: horns
 training:
     precision: 32
@@ -30,7 +34,7 @@ training:
     lr: 5e-1
     weight_decay: 0.0
 validation:
-    check_epoch: 15
+    check_epoch: 50
     limit_batch: 1
     check_interval: 1
     data:

@@ -16,7 +16,7 @@ from soft_utils import flow_from_weights, filter_to_image, flow_to_filter, warp_
 from softsplat_downsample import softsplat
 
 class SoftMultiFramePredictor(torch.nn.Module):
-    def __init__(self, cfg, n_frames, weight_sl=31, downsample_factor=1, filter_zoom=1, init='all'):
+    def __init__(self, cfg, n_frames, weight_sl=31, downsample_factor=1, filter_zoom=1, init='all', feat_dim=256):
         super(SoftMultiFramePredictor, self).__init__()
         image_size = [int(x) for x in cfg.dataset.imsz.split(",")]
         image_size = [image_size[1], image_size[0]]
@@ -30,10 +30,31 @@ class SoftMultiFramePredictor(torch.nn.Module):
         self.filter_zoom = filter_zoom
         assert((weight_sl + downsample_factor - 1) % filter_zoom == 0)
         self.true_sl = (weight_sl + downsample_factor - 1) // filter_zoom
-        self.weights = torch.nn.Parameter(torch.zeros(1, self.n_frames, self.height, self.width, self.true_sl, self.true_sl)) 
+        """
         if init == 'zero':
             assert(downsample_factor == 1)
             self.weights.data[:, :, :, :, (self.weight_sl-1)//2, (self.weight_sl-1)//2] += 10.0
+        """
+
+        self.method = cfg.model.cost_method
+        if self.method == 'weights':
+            self.weights = torch.nn.Parameter(torch.zeros(1, self.n_frames, self.height, self.width, self.true_sl, self.true_sl)) 
+        elif self.method == 'feats':
+            fill_val = (1/feat_dim) ** 0.5
+            #self.src_feats = torch.nn.Parameter(torch.full((1, self.n_frames, feat_dim, self.height * self.downsample_factor, self.width * self.downsample_factor), fill_val))
+            #self.src_feats = torch.nn.Parameter(torch.full((1, self.n_frames, feat_dim, self.height, self.width), fill_val))
+            self.src_feats = torch.nn.Parameter(torch.full((1, 1, feat_dim, self.height, self.width), fill_val))
+            #self.tgt_feats = torch.nn.Parameter(torch.full((1, self.n_frames, feat_dim, self.height, self.width), fill_val))
+            print('restricting tgt feats to only be 1 frame')
+            self.tgt_feats = torch.nn.Parameter(torch.full((1, 1, feat_dim, self.height, self.width), fill_val))
+        elif self.method == 'nn':
+            self.src_nn = ConvFeaturePredictor(cfg, self.height, self.width, feat_dim) 
+            #self.tgt_nn = ConvFeaturePredictor(cfg, self.height, self.width, feat_dim) 
+            self.tgt_nn = self.src_nn
+            #self.tgt_nn = ConvFeaturePredictor(cfg, self.height, self.width, feat_dim) 
+            #self.tgt_nn.conv1 = self.src_nn.conv1
+            #self.tgt_nn.conv4 = self.src_nn.conv4
+            #self.tgt_nn.relu = self.src_nn.relu
 
         t = self.weight_sl//2 + (self.downsample_factor - 1)/2
         x_positions = torch.linspace(-t, t, self.weight_sl + self.downsample_factor - 1)
@@ -44,18 +65,68 @@ class SoftMultiFramePredictor(torch.nn.Module):
         self.grid = torch.mean(self.grid, dim=(1, 3))
 
         self.max_size = torch.max(torch.abs(self.grid)) / self.downsample_factor
-        print('filter zoom approx position, FIX THAT!!')
-        print('filter zoom approx max size, FIX THAT!!')
-        print('filter zoom broke out, FIX THAT!!')
 
-    def forward(self, in_frames, weights=None, temp=None):
+    def cat_pos_emb(self, inp):
+        x_pos = torch.linspace(-1, 1, inp.shape[-2]).to(inp.device)
+        y_pos = torch.linspace(-1, 1, inp.shape[-1]).to(inp.device)
+
+        grid_x, grid_y = torch.meshgrid(x_pos, y_pos)
+        return torch.cat((inp, grid_x[None, None], grid_y[None, None]), dim=1)
+
+    def forward(self, in_frames, tgt_frames, weights=None, temp=None, flip=False, in_down=None):
+        assert(in_frames.shape[1] == 1 and tgt_frames.shape[1] == 1)
         if weights is not None:
             weights = weights.flatten(start_dim=-2)
         else:
-            weights = self.weights.flatten(start_dim=-2)
+            if self.method == 'weights':
+                weights_shape = self.weights.size()
+                weights = self.weights.flatten(start_dim=-2)
+            elif self.method == 'feats':
+                if self.downsample_factor == 1 or self.src_feats.shape[3] != self.tgt_feats.shape[3]:
+                    if flip:
+                        src_feats = self.tgt_feats
+                    else:
+                        src_feats = self.src_feats
+                else:
+                    if flip:
+                        src_feats = torch.nn.functional.interpolate(self.tgt_feats[0], scale_factor=self.downsample_factor, mode='bilinear')[None]
+                    else:
+                        src_feats = torch.nn.functional.interpolate(self.src_feats[0], scale_factor=self.downsample_factor, mode='bilinear')[None]
+                src_feats = src_feats / torch.linalg.norm(src_feats, dim=2, keepdim=True)
+                src_feats = pad_for_filter(src_feats, self.weight_sl, self.downsample_factor)
+
+                if flip:
+                    tgt_feats = self.src_feats / torch.linalg.norm(self.src_feats, dim=2, keepdim=True)
+                else:
+                    tgt_feats = self.tgt_feats / torch.linalg.norm(self.tgt_feats, dim=2, keepdim=True)
+                tgt_feats = tgt_feats[..., None, None]
+
+                weights = torch.sum(src_feats * tgt_feats, dim=2) # sum across the features
+                weights_shape = weights.size()
+                weights = weights.flatten(start_dim=-2)
+            elif self.method == 'nn':
+                # broken for n_frames > 1 (and feats too i think)
+                if flip:
+                    src_feats = self.tgt_nn(tgt_frames[:, 0])
+                else:
+                    src_feats = self.src_nn(in_down[:, 0])
+                src_feats = torch.nn.functional.interpolate(src_feats, scale_factor=self.downsample_factor, mode='bilinear')[None]
+                src_feats = src_feats / torch.linalg.norm(src_feats, dim=2, keepdim=True)
+                src_feats = pad_for_filter(src_feats, self.weight_sl, self.downsample_factor)
+
+                if flip:
+                    tgt_feats = self.src_nn(in_down[:, 0])[:, None]
+                else:
+                    tgt_feats = self.tgt_nn(tgt_frames[:, 0])[:, None]
+                tgt_feats = tgt_feats / torch.linalg.norm(tgt_feats, dim=2, keepdim=True)
+                tgt_feats = tgt_feats[..., None, None]
+
+                weights = torch.sum(src_feats * tgt_feats, dim=2) # sum across the features
+                weights_shape = weights.size()
+                weights = weights.flatten(start_dim=-2)
         if temp is None:
             temp = 1.
-        weights = F.softmax(weights * temp, dim=-1).view_as(self.weights)
+        weights = F.softmax(weights * temp, dim=-1).view(weights_shape)
 
         weights = weights.to(in_frames.device)
         grid = self.grid.to(in_frames.device)
@@ -82,7 +153,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
         #deviation = torch.sum(deviation * weights, dim=(4, 5))
 
         #return {'out':out, 'positions': expected_positions, 'input':in_frames, 'weights':weights, 'exp_norm':expected_norm, 'var': deviation}
-        return {'out':out, 'positions': expected_positions, 'input':in_frames, 'weights':weights, 'exp_norm':expected_norm}
+        return {'out':out, 'positions': expected_positions, 'input':in_frames, 'weights':weights, 'exp_norm':expected_norm, 'in_down': in_down}
 
     def set(self, idx, set_to):
         self.weights.data[:, idx] = torch.log(torch.maximum(set_to, torch.full_like(set_to, 1e-24)))
@@ -105,6 +176,51 @@ class IdentityPredictor(torch.nn.Module):
     def forward(self, in_frames, **kwargs):
         return {'out': in_frames, 'positions': torch.zeros((in_frames.shape[0], in_frames.shape[1], in_frames.shape[3], in_frames.shape[4], 2)).to(in_frames.device), 'input': in_frames, 'weights': self.weights, 'exp_norm': torch.zeros(in_frames.shape).to(in_frames.device)}
 
+class ConvFeaturePredictor(torch.nn.Module):
+    def __init__(self, cfg, height, width, feat_dim):
+        super(ConvFeaturePredictor, self).__init__()
+
+        x_pos = torch.linspace(-1, 1, height)
+        y_pos = torch.linspace(-1, 1, width)
+        grid_x, grid_y = torch.meshgrid(x_pos, y_pos)
+        xy = torch.cat((grid_x[None, None], grid_y[None, None]), dim=1)
+        self.pos_emb = torch.zeros((1, 160, height, width))
+        for i in range(16):
+            self.pos_emb[:,4*i:4*i+2] = torch.sin(xy*(i+1)*3.1415)
+            self.pos_emb[:,4*i+2:4*i+4] = torch.cos(xy*(i+1)*3.1415)
+        for i in range(8):
+            self.pos_emb[:,64+4*i:66+4*i] = torch.sin(xy*(2*i+16)*3.1415)
+            self.pos_emb[:,66+4*i:68+4*i] = torch.cos(xy*(2*i+16)*3.1415)
+        for i in range(8):
+            self.pos_emb[:,96+4*i:98+4*i] = torch.sin(xy*(4*i+32)*3.1415)
+            self.pos_emb[:,98+4*i:100+4*i] = torch.cos(xy*(4*i+32)*3.1415)
+        for i in range(8):
+            self.pos_emb[:,128+4*i:130+4*i] = torch.sin(xy*(8*i+64)*3.1415)
+            self.pos_emb[:,130+4*i:132+4*i] = torch.cos(xy*(8*i+64)*3.1415)
+        #self.pos_emb = torch.nn.Parameter(torch.randn(1, 15, height, width) * 0.0)
+
+        self.conv1 = torch.nn.Conv2d(3 + self.pos_emb.shape[1], feat_dim, 123, padding=61)
+        #self.conv2 = torch.nn.Conv2d(32, 32, 31, padding=15)
+        #self.conv3 = torch.nn.Conv2d(32, 32, 31, padding=15)
+        #self.conv4 = torch.nn.Conv2d(32, feat_dim, 31, padding=15)
+        self.relu = torch.nn.ReLU()
+
+        self.conv1.weight.data[:, 3:] = torch.zeros_like(self.conv1.weight.data[:, 3:])
+
+    def forward(self, x):
+        x = torch.cat((x, self.pos_emb.to(x.device)), dim=1)
+        x = self.conv1(x)
+        """
+        x = self.relu(x)
+        x = self.conv2(x)
+        x = self.relu(x)
+        x = self.conv3(x)
+        x = self.relu(x)
+        x = self.conv4(x)
+        """
+
+        return x
+
 class OverfitSoftLearner(L.LightningModule):
     def __init__(self, cfg: DictConfig):
         super().__init__()
@@ -115,6 +231,7 @@ class OverfitSoftLearner(L.LightningModule):
         self.set_model = True
         self.three_frames = cfg.model.three_frames
         self.weight_sl = cfg.model.weight_sl
+        self.temp = cfg.model.temp
 
         imsz_sm = [int(x) for x in cfg.dataset.imsz.split(",")]
         imsz_lg = [int(x) for x in cfg.dataset.imsz_super.split(",")]
@@ -122,14 +239,15 @@ class OverfitSoftLearner(L.LightningModule):
         assert(imsz_sm[1] * self.downsample_factor == imsz_lg[1])
 
         if self.three_frames:
-            self.model = SoftMultiFramePredictor(cfg, 2, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom) # 123 for num. 11
+            self.model = SoftMultiFramePredictor(cfg, 2, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom, feat_dim=cfg.model.feat_dim) # 123 for num. 11
         else:
-            self.model = SoftMultiFramePredictor(cfg, 1, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom) # 123 for num. 11
-            #self.model = SoftMultiFramePredictor(cfg, 1, downsample_factor=self.downsample_factor, weight_sl=23, filter_zoom=1) # 123 for num. 11
+            self.model = SoftMultiFramePredictor(cfg, 1, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom, feat_dim=cfg.model.feat_dim) # 123 for num. 11
         #self.low_model = SoftMultiFramePredictor(cfg, 2, downsample_factor=self.downsample_factor, weight_sl=3, filter_zoom=1)
 
         #self.tgt_model = SoftMultiFramePredictor(cfg, self.model.n_frames, weight_sl=3) # filter for target image
         self.tgt_model = IdentityPredictor(cfg, 1, weight_sl=3) # no filters for target image
+
+        self.old_epe_full = None
 
     def configure_optimizers(self):
         #self.optimizers = torch.optim.Adam(list(self.model.parameters()) + list(self.tgt_model.parameters()), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
@@ -142,7 +260,7 @@ class OverfitSoftLearner(L.LightningModule):
         x[:, 0, 0, 0] = x[:, 0, 0, 0] * 0.95  # not completely white so wandb doesn't bug out
         return list(torch.chunk(x, bsz))
 
-    def loss(self, outputs, targets, occ_mask=None, image=None):
+    def loss(self, outputs, targets, occ_mask=None, image=None, targets_up=None):
         if occ_mask is not None:
             mult_factor = (~occ_mask.repeat(1, 1, 3, 1, 1)).float()
         else:
@@ -154,17 +272,21 @@ class OverfitSoftLearner(L.LightningModule):
             #loss = criterion(outputs["out"] * mult_factor, targets["out"] * mult_factor)
         else:
             loss = criterion(outputs["out"] * mult_factor, targets["out"] * mult_factor)
-        """
         #loss, small_src = distribution_photometric(outputs['weights'], outputs['input'], targets['out'], self.model.weight_sl, self.model.downsample_factor, self.model.filter_zoom)
-        loss, _ = normal_minperblob(outputs['weights'], outputs['input'], targets['out'], self.model.weight_sl, self.model.downsample_factor, self.model.filter_zoom)
+
+        assert(self.model.filter_zoom == 1)
+        """
+        loss, _ = normal_minperblob(outputs['weights'], outputs['input'], targets['out'], self.model.weight_sl, self.model.downsample_factor, self.model.filter_zoom, flatness=self.cfg.model.charbonnier_flatness)
 
         #input(small_src.shape)
         #small_outputs = self.low_model(torch.zeros_like(outputs['input']))
         #loss2, _ = distribution_photometric(small_outputs['weights'], small_src, targets['out'], self.low_model.weight_sl, self.low_model.downsample_factor, self.low_model.filter_zoom)
         #loss += loss2
 
-        #temp_smooth_reg = temporal_smoothness_loss(outputs['positions'])
-        #loss += 1e-2 * temp_smooth_reg
+        if self.three_frames:
+            temp_smooth_reg = temporal_smoothness_loss(outputs['positions'])
+            #temp_smooth_reg = full_temporal_smoothness_loss(outputs['weights'])
+            loss += 1e-2 * temp_smooth_reg
 
         if occ_mask is not None:
             occ_mask = occ_mask.float()
@@ -192,6 +314,13 @@ class OverfitSoftLearner(L.LightningModule):
 
         #self_reg = torch.nn.functional.mse_loss(targets['input'], targets['out'])
         #loss += self_reg * 1e-1
+        """
+        raft = raft_large(weights='C_T_V2')
+        raft.to(targets_up.device)
+        flow = raft(targets_up, outputs["input"][0])
+        flow[-1] = torchvision.transforms.functional.resize(flow[-1], (flow[-1].shape[2]//self.downsample_factor, flow[-1].shape[3]//self.downsample_factor))
+        loss = torch.mean(torch.abs(torch.permute(outputs['positions'][0], (0, 3, 1, 2)) - flow[-1]))
+        """
 
         return loss
 
@@ -217,11 +346,15 @@ class OverfitSoftLearner(L.LightningModule):
         #self.check_filter_size(frame2_up, frame3_up, gt_flow)
 
         if self.three_frames:
-            outputs = self.model(torch.stack((frame1_up, frame3_up), dim=1))
+            outputs = self.model(torch.stack((frame1_up, frame3_up), dim=1), frame2[:, None], temp=self.temp)
         else:
-            outputs = self.model(frame3_up[:, None])
+            #outputs = self.model(frame3_up[:, None], frame2, temp=self.temp)
+            #outputs = self.model(torch.stack((frame2_up, frame3_up), dim=1), torch.stack((frame3, frame2), dim=1), temp=self.temp)
+            outputs = self.model(frame3_up[:, None], frame2[:, None], temp=self.temp, in_down=frame3[:, None])
+            outputs_2 = self.model(frame2_up[:, None], frame3[:, None], temp=self.temp, flip=True, in_down=frame2[:, None])
 
         target = self.tgt_model(frame2[:, None])
+        target_2 = self.tgt_model(frame3[:, None])
 
         fwd_flows = [(outputs["positions"] - target["positions"])[:, -1].permute(0, 3, 1, 2).float()]
 
@@ -238,7 +371,7 @@ class OverfitSoftLearner(L.LightningModule):
         else:
             occ_mask = None
 
-        loss = self.loss(outputs, target, occ_mask=occ_mask, image=frame2[:, None])
+        loss = self.loss(outputs, target, occ_mask=occ_mask, image=frame2[:, None], targets_up=frame3_up) + self.loss(outputs_2, target_2, occ_mask=occ_mask, image=frame3[:, None], targets_up=frame2_up)
         fullres_fwd_flow = fwd_flows[-1] # correction deleted for now
         self.log_dict({
             "train/loss": loss,
@@ -257,7 +390,10 @@ class OverfitSoftLearner(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         frame1, frame2, frame3, gt_flow, frame1_up, frame2_up, frame3_up, gt_flow_orig = batch
-        flow_max = self.check_filter_size(frame2_up, frame3_up, gt_flow)
+        if self.three_frames:
+            flow_max = max(self.check_filter_size(frame2_up, frame3_up, gt_flow), self.check_filter_size(frame2_up, frame1_up, gt_flow))
+        else:
+            flow_max = self.check_filter_size(frame2_up, frame3_up, gt_flow)
 
         raft = raft_large(weights='C_T_V2')
         raft.to(frame2.device)
@@ -271,13 +407,17 @@ class OverfitSoftLearner(L.LightningModule):
 
         with torch.no_grad():
             if self.three_frames:
-                outputs = self.model(torch.stack((frame1_up, frame3_up), dim=1))
-                outputs_100 = self.model(torch.stack((frame1_up, frame3_up), dim=1), temp=100)
+                outputs = self.model(torch.stack((frame1_up, frame3_up), dim=1), frame2[:, None], temp=self.temp)
+                outputs_100 = self.model(torch.stack((frame1_up, frame3_up), dim=1), frame2[:, None], temp=100)
             else:
-                outputs = self.model(frame3_up[:, None])
-                outputs_100 = self.model(frame3_up[:, None], temp=100)
+                outputs = self.model(frame3_up[:, None], frame2[:, None], temp=self.temp, in_down=frame3[:, None])
+                outputs_2 = self.model(frame2_up[:, None], frame3[:, None], temp=self.temp, flip=True, in_down=frame2[:, None])
+                outputs_100 = self.model(frame3_up[:, None], frame2[:, None], temp=100, in_down=frame3[:, None])
+                #outputs = self.model(torch.stack((frame2_up, frame3_up), dim=1), torch.stack((frame3, frame2), dim=1), temp=self.temp)
+                #outputs_100 = self.model(torch.stack((frame2_up, frame3_up), dim=1), torch.stack((frame3, frame2), dim=1), temp=100)
 
             target_outputs = self.tgt_model(frame2[:, None])
+            target_outputs_2 = self.tgt_model(frame3[:, None])
             fwd_flows = [(outputs["positions"] - target_outputs["positions"])[:, -1].permute(0, 3, 1, 2).float()]
             fwd_flows_100 = [(outputs_100["positions"] - target_outputs["positions"])[:, -1].permute(0, 3, 1, 2).float()]
             if self.three_frames:
@@ -287,10 +427,10 @@ class OverfitSoftLearner(L.LightningModule):
             tgt_flows = [target_outputs["positions"][:, -1].permute(0, 3, 1, 2).float()]
             print(f'Max flow: {flow_max}, max pred flow: {torch.max(torch.abs(fwd_flows[-1]))}')
 
-            loss = self.loss(outputs, target_outputs, occ_mask=None, image=frame2[:, None])
+            loss = self.loss(outputs, target_outputs, occ_mask=None, image=frame2[:, None], targets_up=frame2_up) + self.loss(outputs_2, target_outputs_2, occ_mask=None, image=frame3[:, None], targets_up=frame3_up)
 
-            checksum = torch.sum(self.model.weights)
             with torch.set_grad_enabled(True):
+                """
                 #weights = self.model.weights.detach().clone()
                 weights = self.model.weights
                 weights.requires_grad_(True)
@@ -309,7 +449,9 @@ class OverfitSoftLearner(L.LightningModule):
 
                 weights.grad = None
                 #weights.requires_grad_(False)
-            assert(torch.abs(torch.sum(self.model.weights) - checksum) == 0.0)
+                """
+                grad_fwd_flow = torch.zeros_like(fwd_flows[-1])
+                grad_bwd_flow = torch.zeros_like(bwd_flows[-1])
 
             mem_limit_scale = 1 / max(frame2_up.shape[2] / 1024, frame2_up.shape[3] / 1024, 1) # scale down for memory limits
             frame2_round = torchvision.transforms.functional.resize(frame2, (8 * math.ceil(frame2.shape[2] / 8), 8 * math.ceil(frame2.shape[3] / 8)))
@@ -378,7 +520,10 @@ class OverfitSoftLearner(L.LightningModule):
                 "val/raw_epe_full": raw_epe_full, # previous EPE but w/o target filter adjustment (same if no target filters)
                 "val/raft_epe_full": raft_epe_full, # EPE between (1) RAFT with full resolution f2, f3 as input (2) full resolution flow
                 "val/smurf_epe_full": smurf_epe_full, # EPE between (1) SMURF with full resolution f2, f3 as input (2) full resolution flow
+                "val/mode_epe_full": mode_epe_full, # EPE between (1) SMURF with full resolution f2, f3 as input (2) full resolution flow
                 "val/occ_epe": occ_epe,
+                "temp": self.temp,
+                "pos_emb_avg": 0.0 if self.cfg.model.cost_method != "nn" else torch.mean(torch.abs(self.model.src_nn.pos_emb)),
             }, sync_dist=True)
             print(epe_full)
             #"val/var_mean": torch.mean(outputs["var"])
@@ -445,6 +590,46 @@ class OverfitSoftLearner(L.LightningModule):
             self.logger.log_image(key='exp_norm', images=self.chunk(outputs['exp_norm'][:, -1, None].repeat(1,3,1,1)), step=self.global_step) # grayscale image of the expected norm of the flow
             #self.logger.log_image(key='var', images=self.chunk(outputs['var'][:, -1, None].repeat(1,3,1,1)), step=self.global_step) # grayscale image of the expected norm of the flow
             self.logger.log_image(key='occ_mask', images=self.chunk(occ_mask_vis), step=self.global_step) # grayscale image of the expected norm of the flow
+
+            if self.cfg.model.cost_method in ['feats', 'nn']:
+                if self.cfg.model.cost_method == 'feats':
+                    src_feats = self.model.src_feats / torch.linalg.norm(self.model.src_feats, dim=2, keepdim=True)
+                    tgt_feats = self.model.tgt_feats / torch.linalg.norm(self.model.tgt_feats, dim=2, keepdim=True)
+                else:
+                    src_feats = self.model.src_nn(frame3)[:, None]
+                    tgt_feats = self.model.tgt_nn(frame2)[:, None]
+                    src_feats = src_feats / torch.linalg.norm(src_feats, dim=2, keepdim=True)
+                    tgt_feats = tgt_feats / torch.linalg.norm(tgt_feats, dim=2, keepdim=True)
+                    src_pos_emb = self.model.src_nn.pos_emb[:, None]
+                    tgt_pos_emb = self.model.tgt_nn.pos_emb[:, None]
+                    src_pos_emb = src_pos_emb - torch.min(src_pos_emb, dim=2, keepdim=True)[0]
+                    src_pos_emb = src_pos_emb / (torch.max(src_pos_emb, dim=2, keepdim=True)[0] + 1e-10)
+                    tgt_pos_emb = tgt_pos_emb - torch.min(tgt_pos_emb, dim=2, keepdim=True)[0]
+                    tgt_pos_emb = tgt_pos_emb / (torch.max(tgt_pos_emb, dim=2, keepdim=True)[0] + 1e-10)
+                #src_atan = torchvision.utils.flow_to_image(src_feats[0, :])
+                #tgt_atan = torchvision.utils.flow_to_image(tgt_feats[0, :])
+                src_feats = (torch.permute(src_feats[0], (1, 0, 2, 3)) * 0.5 + 0.5) * 255
+                tgt_feats = (torch.permute(tgt_feats[0], (1, 0, 2, 3)) * 0.5 + 0.5) * 255
+                if self.cfg.model.cost_method == "nn":
+                    src_pos_emb = torch.permute(src_pos_emb[0], (1, 0, 2, 3)) * 255
+                    tgt_pos_emb = torch.permute(tgt_pos_emb[0], (1, 0, 2, 3)) * 255
+                else:
+                    src_pos_emb, tgt_pos_emb = None, None
+                self.logger.log_image(key='src_feats', images=self.chunk(src_feats), step=self.global_step)
+                self.logger.log_image(key='tgt_feats', images=self.chunk(tgt_feats), step=self.global_step)
+                if src_pos_emb is not None and src_pos_emb.shape[0] <= 32: # probably a learned embedding
+                    self.logger.log_image(key='src_pos_emb', images=self.chunk(src_pos_emb), step=self.global_step)
+                    self.logger.log_image(key='tgt_pos_emb', images=self.chunk(tgt_pos_emb), step=self.global_step)
+                #self.logger.log_image(key='src_feats_atan', images=self.chunk(src_atan), step=self.global_step)
+                #self.logger.log_image(key='tgt_feats_atan', images=self.chunk(tgt_atan), step=self.global_step)
+                
+                """
+                if self.old_epe_full != None and self.old_epe_full - 0.01 < epe_full:
+                    print(f"Old temp: {self.temp}")
+                    self.temp *= 1.01
+                    print(f"New temp: {self.temp}")
+                """
+                self.old_epe_full = epe_full
 
 
 def compute_epe(gt, pred):

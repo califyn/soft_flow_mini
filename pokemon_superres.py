@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 from glob import glob
 
-class LLFFSuperResDataset():
+class PokemonSuperResDataset():
     def __init__(self, cfg, resize_flow = True):
         self.imsz = [int(x) for x in cfg.dataset.imsz.split(",")]
         self.imsz_super = [int(x) for x in cfg.dataset.imsz_super.split(",")]
@@ -18,12 +18,11 @@ class LLFFSuperResDataset():
         assert self.split in ['validation'], "Split must be validation"
         self.resize_flow = resize_flow
 
-        base_path = f"/nobackup/nvme1/datasets/llff/{cfg.dataset.subset}/images/" # replace with your path
-        #base_path = f"/home/califyn/flowmap/datasets/own/second/" # replace with your path
+        base_path = f"/nobackup/nvme1/pokemon_rooms/static_pokemon/out_0/rgb/" # replace with your path
         
         self.split_paths = []
-        files = list(glob(base_path + "*.jpg"))
-        #files = list(glob(base_path + "*.png"))
+        #files = list(glob(base_path + "*.jpg"))
+        files = list(glob(base_path + "*.png"))
         files = list(sorted(files))
         """
         for a, b, c in zip(files[:-2], files[1:-1], files[2:]):
@@ -66,8 +65,8 @@ class LLFFSuperResDataset():
             flow_np = cv2.resize(flow_np, (self.imsz[0], self.imsz[1]))
             flow = torch.tensor(flow_np).permute(2, 0, 1)
 
-            flow_resize_0 = 4032/self.imsz[0]
-            flow_resize_1 = 3024/self.imsz[1]
+            flow_resize_0 = 512/self.imsz[0]
+            flow_resize_1 = 512/self.imsz[1]
             flow[0] = flow[0] / flow_resize_0
             flow[1] = flow[1] / flow_resize_1
         else:
