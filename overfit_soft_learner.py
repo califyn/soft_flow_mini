@@ -143,8 +143,8 @@ class SoftMultiFramePredictor(torch.nn.Module):
         x_padded = pad_for_filter(in_frames, self.weight_sl, self.downsample_factor)
 
         # For each pixel in the input frame, compute the weighted sum of its neighborhood
-        #out = torch.einsum('bnijkl, bncijkl->bncij', weights, x_padded)
-        out = torch.zeros_like(x_padded[..., 0, 0]) # placeholder for now
+        out = torch.einsum('bnijkl, bncijkl->bncij', weights, x_padded)
+        #out = torch.zeros_like(x_padded[..., 0, 0]) # placeholder for now
         expected_positions = torch.einsum('bnijkl,klm->bnijm', weights, grid) / self.downsample_factor
         expected_norm = torch.einsum('bnijkl,kl->bnij', weights, grid.norm(dim=-1)) / self.downsample_factor  # Shape: [height, width, 2]
         expected_positions = expected_positions.flip(-1)
@@ -232,6 +232,9 @@ class OverfitSoftLearner(L.LightningModule):
         self.three_frames = cfg.model.three_frames
         self.weight_sl = cfg.model.weight_sl
         self.temp = cfg.model.temp
+        self.bisided = cfg.model.bisided
+        if self.bisided and self.cfg.model.cost_method == 'weights':
+            raise ValueError('bisided flow optimization not compatible with weights')
 
         imsz_sm = [int(x) for x in cfg.dataset.imsz.split(",")]
         imsz_lg = [int(x) for x in cfg.dataset.imsz_super.split(",")]
@@ -277,6 +280,7 @@ class OverfitSoftLearner(L.LightningModule):
         assert(self.model.filter_zoom == 1)
         """
         loss, _ = normal_minperblob(outputs['weights'], outputs['input'], targets['out'], self.model.weight_sl, self.model.downsample_factor, self.model.filter_zoom, flatness=self.cfg.model.charbonnier_flatness)
+        old_loss = loss.clone()
 
         #input(small_src.shape)
         #small_outputs = self.low_model(torch.zeros_like(outputs['input']))
@@ -321,6 +325,7 @@ class OverfitSoftLearner(L.LightningModule):
         flow[-1] = torchvision.transforms.functional.resize(flow[-1], (flow[-1].shape[2]//self.downsample_factor, flow[-1].shape[3]//self.downsample_factor))
         loss = torch.mean(torch.abs(torch.permute(outputs['positions'][0], (0, 3, 1, 2)) - flow[-1]))
         """
+        #print(f"Final {loss}")
 
         return loss
 
@@ -371,7 +376,9 @@ class OverfitSoftLearner(L.LightningModule):
         else:
             occ_mask = None
 
-        loss = self.loss(outputs, target, occ_mask=occ_mask, image=frame2[:, None], targets_up=frame3_up) + self.loss(outputs_2, target_2, occ_mask=occ_mask, image=frame3[:, None], targets_up=frame2_up)
+        loss = self.loss(outputs, target, occ_mask=occ_mask, image=frame2[:, None], targets_up=frame3_up)
+        if self.bisided:
+            loss += self.loss(outputs_2, target_2, occ_mask=occ_mask, image=frame3[:, None], targets_up=frame2_up)
         fullres_fwd_flow = fwd_flows[-1] # correction deleted for now
         self.log_dict({
             "train/loss": loss,
@@ -427,7 +434,9 @@ class OverfitSoftLearner(L.LightningModule):
             tgt_flows = [target_outputs["positions"][:, -1].permute(0, 3, 1, 2).float()]
             print(f'Max flow: {flow_max}, max pred flow: {torch.max(torch.abs(fwd_flows[-1]))}')
 
-            loss = self.loss(outputs, target_outputs, occ_mask=None, image=frame2[:, None], targets_up=frame2_up) + self.loss(outputs_2, target_outputs_2, occ_mask=None, image=frame3[:, None], targets_up=frame3_up)
+            loss = self.loss(outputs, target_outputs, occ_mask=None, image=frame2[:, None], targets_up=frame2_up)
+            if self.bisided:
+                loss += self.loss(outputs_2, target_outputs_2, occ_mask=None, image=frame3[:, None], targets_up=frame3_up)
 
             with torch.set_grad_enabled(True):
                 """
@@ -550,6 +559,12 @@ class OverfitSoftLearner(L.LightningModule):
             smurf_pred = torchvision.utils.flow_to_image(smurf_pred) / 255 * torch.max(frame2)
             smurf_pred_full = torchvision.utils.flow_to_image(smurf_pred_full) / 255 * torch.max(frame2)
 
+            U = torch.linspace(-1, 1, 100)
+            V = torch.linspace(-1, 1, 100)
+            X, Y = torch.meshgrid(U, V)
+            wheel_flow = torch.stack((X, Y), dim=0)[None].to(frame2.device)
+            wheel_flow = torchvision.utils.flow_to_image(wheel_flow) / 255 * torch.max(frame2)
+
             filters = filter_to_image(outputs["weights"][:, -1], downsample_factor=32)
             target_filters = filter_to_image(target_outputs["weights"][:, -1], downsample_factor=16)
 
@@ -590,6 +605,7 @@ class OverfitSoftLearner(L.LightningModule):
             self.logger.log_image(key='exp_norm', images=self.chunk(outputs['exp_norm'][:, -1, None].repeat(1,3,1,1)), step=self.global_step) # grayscale image of the expected norm of the flow
             #self.logger.log_image(key='var', images=self.chunk(outputs['var'][:, -1, None].repeat(1,3,1,1)), step=self.global_step) # grayscale image of the expected norm of the flow
             self.logger.log_image(key='occ_mask', images=self.chunk(occ_mask_vis), step=self.global_step) # grayscale image of the expected norm of the flow
+            self.logger.log_image(key='colorwheel', images=self.chunk(wheel_flow), step=self.global_step) # grayscale image of the expected norm of the flow
 
             if self.cfg.model.cost_method in ['feats', 'nn']:
                 if self.cfg.model.cost_method == 'feats':
@@ -623,12 +639,12 @@ class OverfitSoftLearner(L.LightningModule):
                 #self.logger.log_image(key='src_feats_atan', images=self.chunk(src_atan), step=self.global_step)
                 #self.logger.log_image(key='tgt_feats_atan', images=self.chunk(tgt_atan), step=self.global_step)
                 
-                """
-                if self.old_epe_full != None and self.old_epe_full - 0.01 < epe_full:
-                    print(f"Old temp: {self.temp}")
-                    self.temp *= 1.01
-                    print(f"New temp: {self.temp}")
-                """
+                if self.cfg.model.temp_scheduling:
+                    # Temperature increases when EPE no longer increases.
+                    if self.old_epe_full != None and self.old_epe_full - 0.01 < epe_full:
+                        print(f"Old temp: {self.temp}")
+                        self.temp *= 1.01
+                        print(f"New temp: {self.temp}")
                 self.old_epe_full = epe_full
 
 
