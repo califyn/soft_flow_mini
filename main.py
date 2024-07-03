@@ -21,20 +21,23 @@ from lightning.pytorch.strategies.ddp import DDPStrategy
 def run(cfg: DictConfig):
     # Set up dataset and dataloader
     if cfg.dataset.dataset == "sintel":
-        dataset = SintelSuperResDataset(cfg)
+        train_dataset = SintelSuperResDataset(cfg, cfg.dataset.train_split)
+        val_dataset = SintelSuperResDataset(cfg, "validation")
     elif cfg.dataset.dataset == "llff":
-        dataset = LLFFSuperResDataset(cfg)
+        train_dataset = LLFFSuperResDataset(cfg, cfg.dataset.train_split)
+        val_dataset = LLFFSuperResDataset(cfg, "validation")
     elif cfg.dataset.dataset == "pokemon":
-        dataset = PokemonSuperResDataset(cfg)
+        train_dataset = PokemonSuperResDataset(cfg, cfg.dataset.train_split)
+        val_dataset = PokemonSuperResDataset(cfg, "validation")
     train_dataloader = torch.utils.data.DataLoader(
-                dataset,
+                train_dataset,
                 batch_size=cfg.training.data.batch_size,
-                num_workers=1,
+                num_workers=31,
                 shuffle=False
             )
     val_dataloader = torch.utils.data.DataLoader(
-                dataset,
-                batch_size=cfg.training.data.batch_size,
+                val_dataset,
+                batch_size=cfg.validation.data.batch_size,
                 num_workers=1,
                 shuffle=False
             )
@@ -92,13 +95,14 @@ def run(cfg: DictConfig):
         logger=logger,
         devices="auto",
         callbacks=callbacks,
-        #strategy="ddp",#"fsdp_native",#DDPFullyShardedStrategy(),  # no ddp for now
+        strategy="ddp",#"fsdp_native",#DDPFullyShardedStrategy(),  # no ddp for now
         precision=cfg.training.precision,
         check_val_every_n_epoch=cfg.validation.check_epoch,
         val_check_interval=cfg.validation.check_interval,
         overfit_batches=None if "overfit_batch" not in dir(cfg.training) else cfg.training.overfit_batch,
-        limit_val_batches=None if "limit_batch" not in dir(cfg.validation) else cfg.validation.limit_batch
+        limit_val_batches=None if "limit_batch" not in dir(cfg.validation) else cfg.validation.limit_batch,
     )
+    #accumulate_grad_batches=None if "accumulate" not in dir(cfg.training) else cfg.training.accumulate
 
     # Training happens here
     trainer.fit(
