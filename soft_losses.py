@@ -24,7 +24,7 @@ def full_temporal_smoothness_loss(weights):
     loss = torch.abs(past - future).mean()
     return loss
 
-def spatial_smoothness_loss(weights, image=None, occ_mask=None, edge_weight=1, occ_weight=0.0):
+def spatial_smoothness_loss(weights, image=None, occ_mask=None, edge_weight=0.0, occ_weight=0.0):
     # Calculate the gradient along the height and width dimensions
     grad_height = weights[:, :, 1:, :, :, :] - weights[:, :, :-1, :, :, :]
     grad_width = weights[:, :, :, 1:, :, :] - weights[:, :, :, :-1, :, :]
@@ -67,6 +67,10 @@ def position_spat_smoothness(positions):
     # Calculate the gradient along the height and width dimensions
     grad_height = positions[:, :, 1:, :, :] - positions[:, :, :-1, :, :]
     grad_width = positions[:, :, :, 1:, :] - positions[:, :, :, :-1, :,]
+
+    # second derivative ? 
+    grad_height = grad_height[:, :, 1:, :, :] - grad_height[:, :, :-1, :, :]
+    grad_width = grad_width[:, :, :, 1:, :] - grad_width[:, :, :, :-1, :,]
 
     # You can use either the L1 or L2 norm for the gradients.
     # L1 norm (absolute differences)
