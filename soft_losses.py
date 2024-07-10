@@ -94,9 +94,9 @@ def flat_charbonnier(x, alpha=0.5, eps=1e-3, flat=1e-1):
 
 criterion = lambda x, y, f: torch.nanmean(flat_charbonnier(x - y, flat=f))
 criterion_min = lambda x, y, f: torch.mean(torch.min(flat_charbonnier(x-y, flat=f), dim=1, keepdim=True)[0]) # three frame min pixel loss
-criterion_three_frames = lambda x, y, f: criterion_min(x, y, f) + 0 * criterion(x, y, f) # match pixel values if you can
+criterion_three_frames = lambda x, y, f: 0.1 * criterion_min(x, y, f) + 0.9 * criterion(x, y, f) # match pixel values if you can
 
-def normal_minperblob(weights, src, tgt, weight_sl, downsample_factor, filter_zoom, flatness=0.0):
+def normal_minperblob(weights, src, tgt, weight_sl, downsample_factor, filter_zoom, flatness=0.0, use_min=False):
     assert(src.shape[2] == 3)
 
     if len(src.shape) == 5: # not made into filter-shapes yet
@@ -124,8 +124,15 @@ def normal_minperblob(weights, src, tgt, weight_sl, downsample_factor, filter_zo
     diff = torch.einsum('bnijkl, bncijkl->bncij', weights, diff)
 
     if src.shape[1] == 2:
-        return criterion_three_frames(diff, torch.zeros_like(diff), flatness), _
-        #return criterion(diff, torch.zeros_like(diff)), _
+        """
+        if use_min:
+            print('Using min')
+            return criterion_three_frames(diff, torch.zeros_like(diff), flatness), _
+        else:
+            print('Not using min')
+            return criterion(diff, torch.zeros_like(diff), flatness), _
+        """
+        return criterion(diff, torch.zeros_like(diff), flatness), _
     else:
         return criterion(diff, torch.zeros_like(diff), flatness), _
 
