@@ -2,3 +2,5 @@ diffusion_control/
 lightning_logs/
 wandb/
 __pycache__/
+
+*.png
