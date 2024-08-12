@@ -95,7 +95,7 @@ def run(cfg: DictConfig):
         logger=logger,
         devices="auto",
         callbacks=callbacks,
-        strategy="ddp",#"fsdp_native",#DDPFullyShardedStrategy(),  # no ddp for now
+        #strategy="ddp",#"fsdp_native",#DDPFullyShardedStrategy(),  # no ddp for now
         precision=cfg.training.precision,
         check_val_every_n_epoch=cfg.validation.check_epoch,
         val_check_interval=cfg.validation.check_interval,

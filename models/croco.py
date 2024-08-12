@@ -206,26 +206,31 @@ class CroCoNet(nn.Module):
         x: (B, L, patch_size**2 *3)
         """
         p = self.patch_embed.patch_size[0]
-        assert imgs.shape[2] == imgs.shape[3] and imgs.shape[2] % p == 0
+        #assert imgs.shape[2] == imgs.shape[3] and imgs.shape[2] % p == 0
+        assert imgs.shape[2] % p == 0
+        assert imgs.shape[3] % p == 0
 
-        h = w = imgs.shape[2] // p
+        #h = w = imgs.shape[2] // p
+        h = imgs.shape[2] // p
+        w = imgs.shape[3] // p
         x = imgs.reshape(shape=(imgs.shape[0], 3, h, p, w, p))
         x = torch.einsum('nchpwq->nhwpqc', x)
         x = x.reshape(shape=(imgs.shape[0], h * w, p**2 * 3))
         
         return x
 
-    def unpatchify(self, x, channels=3):
+    def unpatchify(self, x, channels=3, h=None, w=None):
         """
         x: (N, L, patch_size**2 *channels)
         imgs: (N, 3, H, W)
         """
         patch_size = self.patch_embed.patch_size[0]
-        h = w = int(x.shape[1]**.5)
+        if h is None and w is None:
+            h = w = int(x.shape[1]**.5)
         assert h * w == x.shape[1]
         x = x.reshape(shape=(x.shape[0], h, w, patch_size, patch_size, channels))
         x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], channels, h * patch_size, h * patch_size))
+        imgs = x.reshape(shape=(x.shape[0], channels, h * patch_size, w * patch_size))
         return imgs
 
     def forward(self, img1, img2):
@@ -235,7 +240,7 @@ class CroCoNet(nn.Module):
         #out will be    B x N x (3*patch_size*patch_size)
         #masks are also returned as B x N just in case 
         # encoder of the masked first image 
-        feat1, pos1, mask1 = self._encode_image(img1, do_mask=True)
+        feat1, pos1, mask1 = self._encode_image(img1, do_mask=False)
         # encoder of the second image 
         feat2, pos2, _ = self._encode_image(img2, do_mask=False)
         #print(feat1.mean(), 'feat1 mean')

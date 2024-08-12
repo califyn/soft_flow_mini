@@ -98,3 +98,55 @@ def pad_for_filter(in_frames, weight_sl, downsample_factor):
 
     return x_padded
 
+def bound_mask(flow):
+    R = flow.shape[-3]
+    H, W = flow.shape[-2], flow.shape[-1]
+
+    mask = torch.nn.functional.unfold(
+            torch.ones((1, H, W)),
+            (R, R),
+            padding=R // 2
+    ).reshape((1, 1, R, R, H, W)).to(flow.device)
+
+    return mask
+
+def downsample_filter(fil, downsample_factor=1):
+    fil = torch.reshape(fil, (fil.shape[0], 
+                         fil.shape[1], 
+                         fil.shape[2], 
+                         fil.shape[3], 
+                         fil.shape[4]//downsample_factor, downsample_factor, 
+                         fil.shape[5]//downsample_factor, downsample_factor))
+    fil = torch.sum(fil, dim=(5, 7))
+    return fil
+
+def transpose_filter(fil, downsample_factor=1):
+    flow = fil.clone()
+    flow = downsample_filter(flow, downsample_factor=downsample_factor)
+    flow = torch.permute(flow, (0, 1, 4, 5, 2, 3))
+
+    R = flow.shape[-3]
+    H, W = flow.shape[-2], flow.shape[-1]
+    fil_size = (1, 1, R, R, H, W)
+    mask = bound_mask(flow).to('cpu')
+    
+    dx = (torch.arange(0, R) - R // 2)[None, None, :, None, None, None]
+    x_ = torch.arange(0, H)[None, None, None, None, :, None]
+    dx = torch.broadcast_to(dx, fil_size).clone()
+    x_ = torch.broadcast_to(x_, fil_size).clone()
+    x = dx + x_
+
+    dy = (torch.arange(0, R) - R // 2)[None, None, None, :, None, None]
+    y_ = torch.arange(0, W)[None, None, None, None, None, :]
+    dy = torch.broadcast_to(dy, fil_size).clone()
+    y_ = torch.broadcast_to(y_, fil_size).clone()
+    y = dy + y_
+
+    idxs = torch.stack((dx, x_, x, dy, y_, y, mask), dim=0)
+    idxs = idxs.reshape((7, -1)).long().to(flow.device)
+    idxs = idxs[:, idxs[6] == 1]
+    dx, x_, x, dy, y_, y, _ = tuple(torch.chunk(idxs, 7, dim=0))
+
+    flow[:, :, R // 2 - dx, R // 2 - dy, x, y] = flow[:, :, R // 2 + dx, R // 2 + dy, x_, y_]
+    flow = torch.permute(flow, (0, 1, 4, 5, 2, 3))
+    return flow

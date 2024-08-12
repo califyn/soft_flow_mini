@@ -1,6 +1,6 @@
 import torch.distributions as dist
 import torch
-from soft_utils import warp_previous_flow, pad_for_filter
+from soft_utils import warp_previous_flow, pad_for_filter, transpose_filter, downsample_filter
 from tqdm import tqdm
 
 def entropy_loss(weight_softmax):
@@ -24,7 +24,7 @@ def full_temporal_smoothness_loss(weights):
     loss = torch.abs(past - future).mean()
     return loss
 
-def spatial_smoothness_loss(weights, image=None, occ_mask=None, edge_weight=0.0, occ_weight=0.0):
+def spatial_smoothness_loss(weights, image=None, occ_mask=None, edge_weight=1.0):
     # Calculate the gradient along the height and width dimensions
     grad_height = weights[:, :, 1:, :, :, :] - weights[:, :, :-1, :, :, :]
     grad_width = weights[:, :, :, 1:, :, :] - weights[:, :, :, :-1, :, :]
@@ -40,14 +40,19 @@ def spatial_smoothness_loss(weights, image=None, occ_mask=None, edge_weight=0.0,
 
     if occ_mask is not None:
         occ_mask = occ_mask.to(weights.device)
-        occ_mask_grad_y = occ_mask[:, :, :, 1:, :] - occ_mask[:, :, :, :-1, :]
-        occ_mask_grad_x = occ_mask[:, :, :, :, 1:] - occ_mask[:, :, :, :, :-1]
+        #occ_mask_grad_y = occ_mask[:, :, :, 1:, :] - occ_mask[:, :, :, :-1, :]
+        #occ_mask_grad_x = occ_mask[:, :, :, :, 1:] - occ_mask[:, :, :, :, :-1]
+        occ_mask_grad_y = torch.logical_or(occ_mask[:, :, :, 1:, :], occ_mask[:, :, :, :-1, :])
+        occ_mask_grad_x = torch.logical_or(occ_mask[:, :, :, :, 1:], occ_mask[:, :, :, :, :-1])
     else:
         occ_mask_grad_y = torch.zeros_like(grad_height)[:, :, None, ..., 0, 0]
         occ_mask_grad_x = torch.zeros_like(grad_width)[:, :, None, ..., 0, 0]
 
-    grad_height = grad_height * torch.exp(-edge_weight * torch.mean(torch.abs(image_grad_y - occ_weight * occ_mask_grad_y), dim=2, keepdim=True))[..., None, None]
-    grad_width = grad_width * torch.exp(-edge_weight * torch.mean(torch.abs(image_grad_x - occ_weight * occ_mask_grad_x), dim=2, keepdim=True))[..., None, None]
+    # Right now the edgeaware is only on the occ mask edges -- see if this makes the occ mask fill in correctly
+    #grad_height = grad_height * torch.exp(-edge_weight * torch.mean(torch.abs(image_grad_y * occ_mask_grad_y), dim=2, keepdim=True))[..., None, None]
+    #grad_width = grad_width * torch.exp(-edge_weight * torch.mean(torch.abs(image_grad_x * occ_mask_grad_x), dim=2, keepdim=True))[..., None, None]
+    grad_height = grad_height * torch.exp(-edge_weight * torch.mean(torch.abs(image_grad_y), dim=2, keepdim=True))[..., None, None]
+    grad_width = grad_width * torch.exp(-edge_weight * torch.mean(torch.abs(image_grad_x), dim=2, keepdim=True))[..., None, None]
 
     # You can use either the L1 or L2 norm for the gradients.
     # L1 norm (absolute differences)
@@ -63,14 +68,25 @@ def spatial_smoothness_loss(weights, image=None, occ_mask=None, edge_weight=0.0,
 
     return loss
 
-def position_spat_smoothness(positions):
+def position_spat_smoothness(positions, image=None, edge_weight=1.0):
     # Calculate the gradient along the height and width dimensions
     grad_height = positions[:, :, 1:, :, :] - positions[:, :, :-1, :, :]
-    grad_width = positions[:, :, :, 1:, :] - positions[:, :, :, :-1, :,]
+    grad_width = positions[:, :, :, 1:, :] - positions[:, :, :, :-1, :]
 
     # second derivative ? 
     grad_height = grad_height[:, :, 1:, :, :] - grad_height[:, :, :-1, :, :]
-    grad_width = grad_width[:, :, :, 1:, :] - grad_width[:, :, :, :-1, :,]
+    grad_width = grad_width[:, :, :, 1:, :] - grad_width[:, :, :, :-1, :]
+
+    # Edgeaware
+    if image is not None:
+        image = image.to(weights.device)
+        image_grad_y = image[:, :, :, 1:, :] - image[:, :, :, :-1, :]
+        image_grad_x = image[:, :, :, :, 1:] - image[:, :, :, :, :-1]
+    else:
+        image_grad_y = torch.zeros_like(grad_height)[:, :, None, ..., 0, 0] # reduce by one dim
+        image_grad_x = torch.zeros_like(grad_width)[:, :, None, ..., 0, 0]
+    grad_height = torch.exp(-edge_weight * torch.mean(torch.abs(image_grad_y), dim=2)[..., None])
+    grad_width = torch.exp(-edge_weight * torch.mean(torch.abs(image_grad_x), dim=2)[..., None])
 
     # You can use either the L1 or L2 norm for the gradients.
     # L1 norm (absolute differences)
@@ -195,3 +211,10 @@ def distribution_photometric(weights, src, tgt, weight_sl, downsample_factor, fi
     small_src = None
     return torch.nanmean(loss_per_pxl), small_src
 
+def bijectivity_loss(outputs, downsample_factor=1):
+    transposed = transpose_filter(torch.flip(outputs["weights"], dims=[1]), downsample_factor=downsample_factor)
+    downsampled = downsample_filter(outputs["weights"], downsample_factor=downsample_factor)
+    matched = torch.sum(torch.sqrt(transposed * downsampled), dim=(-2, -1))
+    weight_sl = downsampled.shape[-3]
+
+    return torch.mean(1 - matched) * (weight_sl ** 2)

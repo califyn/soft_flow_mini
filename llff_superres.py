@@ -97,13 +97,17 @@ class LLFFSuperResDataset():
         image3_sup = self.transform(image3_sup)
 
         """
-        image1 = image1[:, 14:-14, 56:-56]
-        image2 = image2[:, 14:-14, 56:-56]
-        image3 = image3[:, 14:-14, 56:-56]
-        flow = flow[:, 14:-14, 56:-56]
-        image1_sup = image1_sup[:, 42:-42, 168:-168]
-        image2_sup = image2_sup[:, 42:-42, 168:-168]
-        image3_sup = image3_sup[:, 42:-42, 168:-168]
+        image1 = image1[:, 6:-7, 6:-6]
+        image2 = image2[:, 6:-7, 6:-6]
+        image3 = image3[:, 6:-7, 6:-6]
+        flow = flow[:, 6:-7, 6:-6]
+        image1_sup = image1_sup[:, 24:-28, 24:-24]
+        image2_sup = image2_sup[:, 24:-28, 24:-24]
+        image3_sup = image3_sup[:, 24:-28, 24:-24]
+        flow_orig = flow
+        image1_sup = image1_sup[:, 2:-2, :]
+        image2_sup = image2_sup[:, 2:-2, :]
+        image3_sup = image3_sup[:, 2:-2, :]
         """
         flow_orig = flow
 
