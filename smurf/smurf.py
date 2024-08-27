@@ -47,5 +47,6 @@ def raft_smurf(checkpoint: Optional[str] = None) -> nn.Module:
     )
     # Load checkpoint if provided
     if checkpoint is not None:
+        state_dict = torch.load(checkpoint, map_location="cpu")
         model.load_state_dict(torch.load(checkpoint, map_location="cpu"))
     return model

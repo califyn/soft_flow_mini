@@ -1,0 +1,9 @@
+python3 -m smurf.smurf_main --train_on="sintel-clean:/data/scene-rep/custom/sintel_tf/test/clean" --global_gpu_batch_size=1 --height=384 --width=512 --plot_dir='/home/califyn/flow_mini/smurf_original/plots' --checkpoint_dir='/home/califyn/flow_mini/smurf_original/checkpoints'
+
+python3 -m smurf.apply_smurf --data_dir="/nobackup/nvme1/datasets/llff/horns/images" --plot_dir="plots" --checkpoint_dir="checkpoints/sintel"
+
+python3 -m smurf.smurf_main --eval_on="sintel-clean:/data/scene-rep/custom/sintel_tf/training/clean" --plot_dir='/home/califyn/flow_mini/smurf_original/plots' --checkpoint_dir='/home/califyn/flow_mini/smurf_original/checkpoints/sintel'
+
+python3 -m smurf.data_conversion_scripts.convert_sintel_to_tf_records --data_dir=/data/scene-rep/custom/Sintel --output_dir=/data/scene-rep/custom/sintel_tf
+
+

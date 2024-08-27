@@ -1,0 +1,3 @@
+conda install python==3.9
+pip install tensorflow[and-cuda]==2.15.0.post1
+pip install gin-config matplotlib opencv-python imageio tensorflow-addons

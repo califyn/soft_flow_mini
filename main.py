@@ -3,10 +3,13 @@ from pathlib import Path
 import argparse
 
 import torch
-from sintel_superres import SintelSuperResDataset
-from llff_superres import LLFFSuperResDataset
-from pokemon_superres import PokemonSuperResDataset
-from learner import OverfitSoftLearner
+from data.sintel_superres import SintelSuperResDataset
+from data.llff_superres import LLFFSuperResDataset
+from data.pokemon_superres import PokemonSuperResDataset
+from data.spring_superres import SpringSuperResDataset
+from data.kitti_superres import KITTISuperResDataset
+from data.superres import Batch
+from src.learner import OverfitSoftLearner
 
 import wandb
 from wandb_utils import download_latest_checkpoint, rewrite_checkpoint_for_compatibility
@@ -29,18 +32,31 @@ def run(cfg: DictConfig):
     elif cfg.dataset.dataset == "pokemon":
         train_dataset = PokemonSuperResDataset(cfg, cfg.dataset.train_split)
         val_dataset = PokemonSuperResDataset(cfg, "validation")
+    elif cfg.dataset.dataset == "spring":
+        train_dataset = SpringSuperResDataset(cfg, cfg.dataset.train_split)
+        val_dataset = SpringSuperResDataset(cfg, "validation")
+    elif cfg.dataset.dataset == "kitti":
+        train_dataset = KITTISuperResDataset(cfg, cfg.dataset.train_split)
+        val_dataset = KITTISuperResDataset(cfg, "validation")
     train_dataloader = torch.utils.data.DataLoader(
                 train_dataset,
                 batch_size=cfg.training.data.batch_size,
                 num_workers=31,
-                shuffle=False
+                shuffle=False,
+                collate_fn=Batch.collate_fn
             )
     val_dataloader = torch.utils.data.DataLoader(
                 val_dataset,
                 batch_size=cfg.validation.data.batch_size,
                 num_workers=1,
-                shuffle=False
+                shuffle=False,
+                collate_fn=Batch.collate_fn
             )
+
+    # Set image size
+    _ = train_dataset[0] # get image size
+    cfg.dataset.imsz = str(train_dataset.imsz[0]) + "," + str(train_dataset.imsz[1])
+    cfg.dataset.imsz_super = str(train_dataset.imsz_super[0]) + "," + str(train_dataset.imsz_super[1])
 
     # Create model
     model = OverfitSoftLearner(cfg)

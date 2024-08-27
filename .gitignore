@@ -4,3 +4,10 @@ wandb/
 __pycache__/
 
 *.png
+*.pt
+*.ckpt
+
+soft_flow/
+datasets/
+datasets
+logs/

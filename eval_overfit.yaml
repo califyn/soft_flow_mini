@@ -6,11 +6,11 @@ wandb:
     project: soft_flow
 model:
     three_frames: false
-    weight_sl: 71 #61 #65 # 31
+    weight_sl: 31
     downsample_factor: 4 #32
     filter_zoom: 1 #4
-    smoothness: 1.2e-0 #6e-1 #1.5e-1 # 2.5e-1 is optimal
-    pos_smoothness: 2.4e-1 #6e-2 #3e-2 
+    smoothness: 2.5e-1 #1.2e-0 #6e-1 #1.5e-1 # 2.5e-1 is optimal
+    pos_smoothness: 3e-2 #2.4e-1 #6e-2 #3e-2 
     temp_smoothness: 0.0
     frameskip: 1
     norm: 0.0
@@ -24,18 +24,18 @@ model:
     fft_filter: null #butter #rect
     fft: 1e-1 #65,95 for rect
 dataset:
-    dataset: kitti #llff #spring #sintel
+    dataset: sintel #kitti #llff #spring #sintel
     train_split: validation 
-    idx: 1 #27 #1 # 401 on spring is kidna intresting #0 #27 #14
+    idx: 0 #27 #1 # 401 on spring is kidna intresting #0 #27 #14
     #imsz: 252,189 #256,109 #126,94 #63,47 #1024,436 #336,252 #512,224 #128,128 #240,135 #64,27
     #imsz_super: 1008,756 #1024,436 #1024,436 #1024,448 #1008,756 #1008,756 #512,512 #4032,3024 #1920,1080 #4032,3008 #2016,1516
     imsz: 4 
     imsz_super: 1
-    dstype: horns
+    dstype: final
     augmentations:
         random_crop: false
         color: false
-    flow_max: 1500 # 15 for sintel
+    flow_max: 15 # 15 for sintel
 training:
     precision: 32
     data:
@@ -46,7 +46,7 @@ training:
     weight_decay: 0.0
     #accumulate: 2
 validation:
-    check_epoch: 50
+    check_epoch: 250
     limit_batch: 1 #16 #
     #check_interval: 570 
     check_interval: 1
