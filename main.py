@@ -55,11 +55,16 @@ def run(cfg: DictConfig):
 
     # Set image size
     _ = train_dataset[0] # get image size
-    cfg.dataset.imsz = str(train_dataset.imsz[0]) + "," + str(train_dataset.imsz[1])
-    cfg.dataset.imsz_super = str(train_dataset.imsz_super[0]) + "," + str(train_dataset.imsz_super[1])
+    if cfg.dataset.crop_to is None:
+        cfg.dataset.imsz = str(train_dataset.imsz[0]) + "," + str(train_dataset.imsz[1])
+        cfg.dataset.imsz_super = str(train_dataset.imsz_super[0]) + "," + str(train_dataset.imsz_super[1])
+    else:
+        cfg.dataset.imsz = cfg.dataset.crop_to
+        ratio = train_dataset.imsz_super[0] // train_dataset.imsz[0]
+        cfg.dataset.imsz_super = str(int(cfg.dataset.crop_to.split(",")[0]) * ratio) + "," + str(int(cfg.dataset.crop_to.split(",")[1]) * ratio) 
 
     # Create model
-    model = OverfitSoftLearner(cfg)
+    model = OverfitSoftLearner(cfg, val_dataset=val_dataset)
 
     # Enforce the correct Python version.
     if sys.version_info.major < 3 or sys.version_info.minor < 9:
@@ -101,7 +106,7 @@ def run(cfg: DictConfig):
 
     callbacks = [
                 LearningRateMonitor("step", True),
-                ModelCheckpoint(every_n_train_steps=5000)
+                ModelCheckpoint(dirpath="logs/" + cfg.wandb.name + "/", every_n_train_steps=cfg.training.ckpt_every)
             ]
 
     # Initialize Pytorch Lightning trainer
@@ -129,13 +134,13 @@ def run(cfg: DictConfig):
     )
 
 if __name__ == "__main__":
-    cfg = OmegaConf.load('overfit.yaml')
-
     parser = argparse.ArgumentParser()
     parser.add_argument('-n','--name', required=True)
     parser.add_argument('-m','--mode', required=True)
+    parser.add_argument('-c','--config', default="overfit")
 
     args = parser.parse_args()
+    cfg = OmegaConf.load(args.config + '.yaml')
     cfg.wandb.name = args.name
     cfg.wandb.mode = args.mode
 

@@ -7,8 +7,8 @@ import subprocess
 #print(validate_sintel())
 #out = run_raft_eval()
 #out = run_smurf_eval()
-out = run_smurf_against_raft()
-#out = run_overfit_eval()
+#out = run_smurf_against_raft()
+out = run_overfit_eval()
 #out = run_overfit_against_smurf()
 
 print({k: v.nanmean().item() for k, v in out['metrics'].items()})

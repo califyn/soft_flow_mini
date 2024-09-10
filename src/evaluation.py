@@ -165,7 +165,7 @@ def accumulate_metrics(dataset, model_fwd, cfg=None):
 
     return metrics
 
-def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None):
+def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None, warped_fwd=None):
     # Visualize some samples
     if sample_idxs is None:
         sample_idxs = list(range(16))
@@ -179,6 +179,8 @@ def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None):
         if isinstance(dataset, KITTISuperResDataset):
             display_keys.append('inpaint_gt')
             display_keys.append('fl_pos')
+        if warped_fwd is not None:
+            display_keys += ['warped_f2', 'warped_f2_diff']
     out = {key: [] for key in display_keys}
     for i in sample_idxs:
         with torch.no_grad():
@@ -242,10 +244,9 @@ def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None):
                                        normalize=True,
                                        scale_each=True)
 
-def evaluate(dataset, model_fwd, cfg=None): # eventually support model fwd
+def evaluate(dataset, model_fwd, cfg=None, warped_fwd=None): # eventually support model fwd
     metrics = accumulate_metrics(dataset, model_fwd, cfg=cfg)
     random_idx = list(range(0, len(dataset), len(dataset)//16))
-    input(random_idx)
     image_random = visualize(dataset, [model_fwd], sample_idxs=random_idx)
 
     worst = torch.topk(metrics['primary'], 8, sorted=True).indices
@@ -390,7 +391,7 @@ class InstanceDataset():
         return self.batch
 
 def get_overfit_fwd(dataset, device=None, cfg=None):
-    num_fit = 1000
+    num_fit = 8000
     data_dir = "logs/overfit_fwd/"
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
@@ -484,7 +485,7 @@ def run_smurf_eval():
 
 def run_overfit_eval():
     cfg = OmegaConf.load('eval_overfit.yaml')
-    dataset = SintelSuperResDataset(cfg, "all")
+    dataset = SintelSuperResDataset(cfg, "validation")
     return evaluate(dataset, get_overfit_fwd(
         dataset,
         cfg=cfg,

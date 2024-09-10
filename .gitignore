@@ -11,3 +11,8 @@ soft_flow/
 datasets/
 datasets
 logs/
+
+*.data-00000-of-00001
+
+models/curope/build/*
+models/curope/curope.cpython-310-x86_64-linux-gnu.so

@@ -2,6 +2,7 @@ import lightning as L
 from omegaconf import DictConfig
 import math
 import functools
+from copy import deepcopy
 
 import torch
 import torchvision
@@ -20,94 +21,14 @@ from .unet import HalfUnet, Unet
 from data.superres import Batch
 
 from models.croco import CroCoNet
+from models.croco_downstream import croco_args_from_ckpt, CroCoDownstreamBinocular
+from models.head_downstream import PixelwiseTaskWithDPT
+from models.pos_embed import interpolate_pos_embed
+from .model_utils import get_parameter_groups
+
 from PIL import Image
 import torchvision.transforms
 from torchvision.transforms import ToTensor, Normalize, Compose
-
-class EigenResult():
-    def __init__(self, result):
-        if result is not None:
-            self.evecs = torch.Tensor(result[0])
-            self.evals = result[1]
-            self.mass = torch.Tensor(result[2])
-            self.L = result[3]
-
-            #self.to_spectral_mtx = self.evecs.T
-            #self.to_original_mtx = torch.diag(self.mass) @ self.evecs
-            self.to_spectral_mtx = self.evecs.T @ torch.diag(self.mass)
-            self.to_original_mtx = self.evecs
-
-            x = self.to_original_mtx @ self.to_spectral_mtx
-            print(x)
-            print(torch.mean(torch.diag(x)))
-
-    def to_spectral(self, x):
-        if isinstance(x, tuple):
-            return tuple([self.to_spectral(xx) for xx in x])
-        else:
-            self.orig_shape = x.shape
-            x = x.reshape((x.shape[0]*x.shape[1], x.shape[2]*x.shape[3]))
-            #ret = torch.sum(self.to_spectral_mtx[None, :, :].to(x.device) * x[:, None], dim=2)
-            ret = torch.matmul(self.to_spectral_mtx[None, :, :].to(x.device), x[:, :, None])[..., 0]
-
-            ret = ret.reshape((self.orig_shape[0], self.orig_shape[1], -1))
-            ret = ret.permute((0, 2, 1))
-
-            return ret
-            #return x
-            #ret = torch.sum(self.to_spectral_mtx[None, :, :, None].to(x.device) * x[:, None], dim=2)
-            #print(ret)
-            #input([torch.sort(torch.abs(ret[..., i]), descending=True) for i in range(ret.shape[-1])])
-            #return ret
-            # (1, K, N, 1) * (B, 1, N, C)
-            # (B, K, N, C)
-            #x = x.reshape((x.shape[0], 176, 240, -1))
-            #c = x.shape[-1]
-            #x = torch.permute(x, (0, 3, 1, 2))
-            """
-            t = x - x.min()
-            t = t / x.max()
-            t = t[:, :3]
-            torchvision.utils.save_image(t, "pre.png")
-            """
-            self.xy = (x.shape[2], x.shape[3])
-            x = torch.fft.rfft2(x)
-            x_pad = torch.zeros_like(x)
-            #x_pad[:, :, :x.shape[2]//1, :x.shape[3]//1] += x[:, :, :x.shape[2]//1, :x.shape[3]//1]
-            x_pad[:, :, :x.shape[2]//2, :x.shape[3]//2] += x[:, :, :x.shape[2]//2, :x.shape[3]//2]
-            #x = torch.permute(x_pad, (0, 2, 3, 1))
-            #x = x.reshape((x.shape[0], -1, c))
-            return x_pad
-    
-    def to_original(self, x):
-        if isinstance(x, tuple):
-            return tuple([self.to_original(xx) for xx in x])
-        else:
-            x = x.reshape((self.orig_shape[0], -1, self.orig_shape[1]))
-            x = x.permute((0, 2, 1))
-            x = x.reshape((self.orig_shape[0]*self.orig_shape[1], -1))
-
-            #ret = torch.sum(self.to_original_mtx[None, :, :].to(x.device) * x[:, None], dim=2)
-            ret = torch.matmul(self.to_original_mtx[None, :, :].to(x.device), x[:, :, None])[..., 0]
-            ret = ret.reshape(self.orig_shape)
-
-            return ret
-            #return x
-            #return torch.sum(self.to_original_mtx[None, :, :, None].to(x.device) * x[:, None], dim=2)
-            # (1, N, K, 1) * (B, 1, K, C)
-            # (B, N, C)
-            #x = x.reshape((-1, self.xy[0], self.xy[1], x.shape[-1]))
-            #x = torch.permute(x, (0, 3, 1, 2))
-            x = torch.fft.irfft2(x, s=self.xy)
-            """
-            t = x - x.min()
-            t = t / x.max()
-            t = t[:, :3]
-            torchvision.utils.save_image(t, "post.png")
-            """
-            #x = torch.permute(x, (0, 2, 3, 1))
-            #x = x.reshape((x.shape[0], -1, x.shape[-1]))
-            return x
 
 def patchify(p, imgs):
     """
@@ -139,61 +60,9 @@ def unpatchify(patch_size, h, w, x):
     imgs = x.reshape(shape=(x.shape[0], channels, h * patch_size, w * patch_size))
     return imgs
 
-class LaplacianBlock(nn.Module):
-    def __init__(self, eigs, dims, patchify=None, unpatchify=None):
-        super(LaplacianBlock, self).__init__()
-        self.eigs = eigs
-        self.diffusion = eigenutils.LaplacianDiffusionBlock(dims)
-
-        #self.model_patchify = patchify
-        #self.model_unpatchify = unpatchify
-
-    """
-    def unpatchify(self, x):
-        if isinstance(x, tuple):
-            ret = [self.unpatchify(xx) for xx in x]
-            return tuple([r[0] for r in ret]), tuple([r[1] for r in ret])
-        else:
-            x = self.model_unpatchify(x)
-            x = torch.permute(x, (0, 2, 3, 1))
-            h, w = x.shape[1], x.shape[2]
-            x = torch.reshape(x, (x.shape[0], x.shape[1]*x.shape[2], x.shape[3]))
-            return x, (h, w)
-
-    def patchify(self, x, hw):
-        if isinstance(x, tuple):
-            return tuple([self.patchify(xx, hwhw) for xx, hwhw in zip(x, hw)])
-        else:
-            x = torch.reshape(x, (x.shape[0], hw[0], hw[1], x.shape[-1]))
-            x = torch.permute(x, (0, 3, 1, 2))
-            x = self.model_patchify(x)
-            return x
-    """
-
-    def forward(self, x):
-        return x, 0. 
-        #x = self.block(*args)
-
-        #x_, hw = self.unpatchify(x)
-        k = self.eigs.to_spectral(x)
-        x_ = self.eigs.to_original(k)
-        #return x_
-
-        diffused = self.diffusion(k, torch.Tensor(self.eigs.evals).to(k.device))
-        diffused = self.eigs.to_original(diffused)
-
-        # maintain high frequencies but penalize them
-        return diffused + (x - x_), torch.nn.functional.mse_loss(x - x_, torch.zeros_like(x))
-
-class IdentityBlock(nn.Module):
-    def __init__(self, d):
-        super(IdentityBlock, self).__init__()
-
-    def forward(self, x, eigs):
-        return x, 0.
 
 class CroCoWrapper(torch.nn.Module):
-    def __init__(self, feat_dim, eigs):
+    def __init__(self, feat_dim,):
         super(CroCoWrapper, self).__init__()
         ckpt = torch.load('/home/califyn/croco/pretrained_models/CroCo_V2_ViTBase_SmallDecoder.pth', 'cpu')
         model = CroCoNet( **ckpt.get('croco_kwargs',{}))
@@ -220,15 +89,44 @@ class CroCoWrapper(torch.nn.Module):
     def forward(self, img1, img2=None):
         self.model.patch_embed.img_size = img1.shape[-2:]
 
-        #out, _, _ = self.model(img2, img1)
+        #out, _, _ = self.model(img1, img2)
         out, _, _ = self.model(img1, img1)
         return self.model.unpatchify(out, channels=self.feat_dim, h=img1.shape[-2]//16, w=img1.shape[-1]//16)
+
+class CroCoDPTWrapper(torch.nn.Module):
+    def __init__(self, feat_dim, img_size):
+        super(CroCoDPTWrapper, self).__init__()
+        ckpt = torch.load('/home/califyn/croco/pretrained_models/CroCo_V2_ViTBase_SmallDecoder.pth', 'cpu')
+
+        croco_args = croco_args_from_ckpt(ckpt)
+        croco_args['img_size'] = (img_size[1], img_size[0])
+        print('Croco args: '+str(croco_args))
+        print(f'Building head PixelwiseTaskWithDPT() with {feat_dim} channel(s)')
+        self.head = PixelwiseTaskWithDPT()
+        self.head.num_channels = feat_dim
+        # build model and load pretrained weights
+        model = CroCoDownstreamBinocular(self.head, **croco_args)
+        #head = PixelwiseTaskWithDPT()
+        #head.num_channels = feat_dim
+        #model = CroCoDownstreamBinocular(head, **croco_args)
+        interpolate_pos_embed(model, ckpt['model'])
+        msg = model.load_state_dict(ckpt['model'], strict=False)
+        print(msg)
+    
+        self.model = model
+        self.feat_dim = feat_dim
+
+    def forward(self, img1, img2=None):
+        #self.model.patch_embed.img_size = img1.shape[-2:]
+        #out, _, _ = self.model(img1, img2)
+        #out, _, _ = self.model(img1, img1)
+        #return self.model.unpatchify(out, channels=self.feat_dim, h=img1.shape[-2]//16, w=img1.shape[-1]//16)
+        return self.model(img1, img2)
 
 
 class SoftMultiFramePredictor(torch.nn.Module):
     def __init__(self, cfg, n_feats, weight_sl=31, downsample_factor=1, filter_zoom=1, init='all', feat_dim=256):
         super(SoftMultiFramePredictor, self).__init__()
-        #image_size = [int(x)//16 for x in cfg.dataset.imsz.split(",")]
         image_size = [int(x) for x in cfg.dataset.imsz.split(",")]
         assert(weight_sl % 2 == 1)
 
@@ -237,6 +135,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
         self.n_frames = n_feats
         self.weight_sl = weight_sl
         self.downsample_factor = downsample_factor
+        self.border_handling = cfg.model.border_handling
         self.filter_zoom = filter_zoom
         assert((weight_sl + downsample_factor - 1) % filter_zoom == 0)
         #assert((weight_sl + downsample_factor - 1) % (2 * downsample_factor) == downsample_factor)
@@ -250,40 +149,8 @@ class SoftMultiFramePredictor(torch.nn.Module):
                 self.fft = fft
             elif self.fft_filter == "butter":
                 self.fft = cfg.model.fft
-            elif self.fft_filter == "eigen":
-                self.fft = 0
         else:
             self.fft = None
-        #self.eigs = EigenResult(eigenutils.get_grid_eigs_cached(self.height, self.width, (self.height*self.width-1)//64)) # 2960
-        self.eigs = EigenResult(None)
-
-        self.method = cfg.model.cost_method
-        if self.method == 'weights':
-            self.weights = torch.nn.Parameter(torch.zeros(1, self.n_frames-1, self.height, self.width, self.true_sl, self.true_sl)) 
-        elif self.method == 'feats':
-            fill_val = (1/feat_dim) ** 0.5
-            self.feats = torch.nn.Parameter(torch.full((1, self.n_frames, feat_dim, self.height, self.width), fill_val))
-        elif self.method == 'nn':
-            """
-            self.nn = CroCoWrapper(feat_dim, self.eigs)
-
-            patch_size = self.nn.model.patch_embed.patch_size[0]
-            model_patchify = functools.partial(patchify, patch_size)
-            model_unpatchify = functools.partial(unpatchify, patch_size, self.height, self.width)
-            self.nn.model.enc_blocks = nn.ModuleList([
-                LaplacianBlock(b, self.eigs, model_patchify, model_unpatchify) for b in self.nn.model.enc_blocks
-                ])
-            self.nn.model.dec_blocks = nn.ModuleList([
-                LaplacianBlock(b, self.eigs, model_patchify, model_unpatchify) for b in self.nn.model.dec_blocks
-                ])
-            """
-            self.nn = HalfUnet(
-               16,
-               IdentityBlock, #functools.partial(LaplacianBlock, self.eigs),
-               channels = 1 * 3,
-               out_dim = 1 * feat_dim,
-               dim_mults = (1, 2, 4, 8),
-            )
 
         t = self.weight_sl//2 + (self.downsample_factor - 1)/2
         x_positions = torch.linspace(-t, t, self.weight_sl + self.downsample_factor - 1)
@@ -294,6 +161,22 @@ class SoftMultiFramePredictor(torch.nn.Module):
         self.grid = torch.mean(self.grid, dim=(1, 3))
 
         self.max_size = torch.max(torch.abs(self.grid)) / self.downsample_factor
+
+        self.method = cfg.cost.method
+        if self.method == 'weights':
+            self.weights = torch.nn.Parameter(torch.zeros(1, self.n_frames-1, self.height, self.width, self.true_sl, self.true_sl)) 
+        elif self.method == 'feats':
+            fill_val = (1/feat_dim) ** 0.5
+            self.feats = torch.nn.Parameter(torch.full((1, self.n_frames, feat_dim, self.height, self.width), fill_val))
+        elif self.method == 'nn':
+            if cfg.cost.model == "croco":
+                self.nn = CroCoWrapper(feat_dim)
+            elif cfg.cost.model == "croco_dpt":
+                if self.border_handling == "pad_feats":
+                    t_patch = math.ceil(t/16) * 16 # assume patch size 16
+                    self.nn = CroCoDPTWrapper(feat_dim, (self.height + 2 * t_patch, self.width + 2 * t_patch))
+                else:
+                    self.nn = CroCoDPTWrapper(feat_dim, (self.height, self.width))
 
     def _get_nd_butterworth_filter(
         self, shape, factor, dtype=torch.float64, squared_butterworth=True
@@ -356,12 +239,6 @@ class SoftMultiFramePredictor(torch.nn.Module):
                 mask = mask[None]
             fft_feats_masked = fft_feats * mask.to(fft_feats.device)
             ret = torch.fft.irfft2(fft_feats_masked, feats.shape[-2:])
-        elif self.fft_filter == "eigen":
-            orig_shape = feats.shape
-            feats = feats.reshape((feats.shape[0]*feats.shape[1], *feats.shape[2:]))
-            feats_spec = self.eigs.to_spectral(feats)
-            ret = self.eigs.to_original(feats_spec)
-            ret = ret.reshape(orig_shape)
 
         return ret
 
@@ -373,7 +250,6 @@ class SoftMultiFramePredictor(torch.nn.Module):
         src_in_up = torch.stack([in_frames[:, s] for s in src_idx], dim=1)
         src_in = torch.stack([in_down[:, s] for s in src_idx], dim=1)
         tgt_in = torch.stack([in_down[:, t] for t in tgt_idx], dim=1)
-        loss = 0.0
 
         if weights is not None:
             weights = weights.flatten(start_dim=-2)
@@ -384,48 +260,56 @@ class SoftMultiFramePredictor(torch.nn.Module):
                 weights_shape = self.weights.size()
                 weights = self.weights.flatten(start_dim=-2)
             elif self.method == 'feats' or self.method == 'nn':
+                if self.method == 'feats' and self.border_handling == 'pad_feats':
+                    raise ValueError("pad_feats border handling not supported for non-NN weight methods yet") 
                 if in_frames.shape[1] == 1:
                     if self.method == "feats":
                         src_feats = self.feats[:, src_idx, None]
                     elif self.method == "nn":
-                        src_feats, l = self.nn(in_frames[:, src_idx])
-                        loss += l
+                        src_feats = self.nn(in_frames[:, src_idx])
                 else:
                     if self.method == "feats":
                         src_feats = torch.stack([self.feats[:, s] for s in src_idx], dim=1)
                     elif self.method == "nn":
                         src_in_ = torch.reshape(src_in, (src_in.shape[0] * src_in.shape[1], *src_in.shape[2:]))
                         tgt_in_ = torch.reshape(tgt_in, (tgt_in.shape[0] * tgt_in.shape[1], *tgt_in.shape[2:]))
-                        src_in_, l = self.nn(src_in_)
-                        tgt_in_, l = self.nn(tgt_in_)
-                        #out, l = self.nn(torch.concatenate((src_in_, tgt_in_), dim=1))
-                        #src_in_, tgt_in_ = torch.chunk(out, 2, dim=1)
-                        src_feats = torch.reshape(src_in_, (in_frames.shape[0], len(src_idx), -1, *src_in.shape[3:]))
-                        loss += l
+                        if self.border_handling == "pad_feats":
+                            t = self.weight_sl//2
+                            model_patch_size = self.nn.model.patch_embed.patch_size
+                            assert(model_patch_size[0] == model_patch_size[1])
+                            t_patch = math.ceil(t/model_patch_size[0]) * model_patch_size[0]
+                            src_in_ = torch.nn.functional.pad(src_in_, (t_patch, t_patch, t_patch, t_patch), mode="constant")
+                            tgt_in_ = torch.nn.functional.pad(tgt_in_, (t_patch, t_patch, t_patch, t_patch), mode="constant")
+                        src_in_, tgt_in_ = self.nn(src_in_, img2=tgt_in_), self.nn(tgt_in_, img2=src_in_)
+                        if self.border_handling == "pad_feats":
+                            trim = t_patch - t
+                            if trim > 0:
+                                src_in_ = src_in_[..., trim:-trim, trim:-trim]
+                            if t_patch > 0:
+                                tgt_in_ = tgt_in_[..., t_patch:-t_patch, t_patch:-t_patch]
+
+                        src_feats = torch.reshape(src_in_, (in_frames.shape[0], len(src_idx), -1, *src_in_.shape[2:]))
                 if self.fft is not None:
                     src_feats = self.fft_ifft(src_feats, self.fft)
                 src_feats = torch.nn.functional.interpolate(src_feats[0], scale_factor=self.downsample_factor, mode='bilinear')[None]
                 src_feats = src_feats / (torch.linalg.norm(src_feats, dim=2, keepdim=True) + 1e-10)
-                src_feats = pad_for_filter(src_feats, self.weight_sl, self.downsample_factor)
+                src_feats = pad_for_filter(src_feats, self.weight_sl, self.downsample_factor, pad=self.border_handling != "pad_feats")
 
                 if in_frames.shape[1] == 1:
                     if self.method == "feats":
                         tgt_feats = self.feats[:, tgt_idx, None]
                     elif self.method == "nn":
-                        tgt_feats, l = self.nn(in_frames[:, tgt_idx])
-                        loss += l
+                        tgt_feats = self.nn(in_frames[:, tgt_idx])
                 else:
                     if self.method == "feats":
                         tgt_feats = torch.stack([self.feats[:, t] for t in tgt_idx], dim=1)
                     elif self.method == "nn":
                         tgt_feats = torch.reshape(tgt_in_, (in_frames.shape[0], len(tgt_idx), -1, *tgt_in.shape[3:]))
-                        loss += l
                 if self.fft is not None:
                     tgt_feats = self.fft_ifft(tgt_feats, self.fft)
                 tgt_feats = tgt_feats / (torch.linalg.norm(tgt_feats, dim=2, keepdim=True) + 1e-10)
                 tgt_feats = tgt_feats[..., None, None]
 
-                #print(torch.max(torch.abs(src_feats)), torch.min(torch.abs(src_feats)), torch.max(torch.abs(tgt_feats)), torch.min(torch.abs(tgt_feats)))
                 weights = torch.sum(src_feats * tgt_feats, dim=2) # sum across the features
                 weights *= temp
                 weights_shape = weights.size()
@@ -437,7 +321,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
         weights = weights.to(in_frames.device)
         grid = self.grid.to(in_frames.device)
 
-        x_padded = pad_for_filter(src_in_up, self.weight_sl, self.downsample_factor)
+        x_padded = pad_for_filter(src_in_up, self.weight_sl, self.downsample_factor, border_fourth_channel=self.border_handling in ["fourth_channel", "pad_feats"])
 
         # For each pixel in the input frame, compute the weighted sum of its neighborhood
         out = torch.einsum('bnijkl, bncijkl->bncij', weights, x_padded)
@@ -453,14 +337,13 @@ class SoftMultiFramePredictor(torch.nn.Module):
                     'src': src_in, 
                     'src_up': src_in_up,
                     'tgt': tgt_in,
-                    'loss': loss
                 }
 
     def set(self, idx, set_to):
         self.weights.data[:, idx] = torch.log(torch.maximum(set_to, torch.full_like(set_to, 1e-24)))
 
 class OverfitSoftLearner(L.LightningModule):
-    def __init__(self, cfg: DictConfig):
+    def __init__(self, cfg: DictConfig, val_dataset=None):
         super().__init__()
 
         self.cfg = cfg
@@ -480,7 +363,7 @@ class OverfitSoftLearner(L.LightningModule):
         if self.three_frames:
             self.model = SoftMultiFramePredictor(cfg, 3, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom, feat_dim=cfg.model.feat_dim) # 123 for num. 11
         else:
-            if self.bisided and self.cfg.model.cost_method == "weights":
+            if self.bisided and self.cfg.cost.method == "weights":
                 self.model = SoftMultiFramePredictor(cfg, 3, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom, feat_dim=cfg.model.feat_dim) # 123 for num. 11
             else:
                 #self.model = SoftMultiFramePredictor(cfg, 2, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom, feat_dim=cfg.model.feat_dim) # 123 for num. 11
@@ -488,12 +371,31 @@ class OverfitSoftLearner(L.LightningModule):
 
         self.old_epe_full = None
         self.automatic_optimization = False
+        self.last_full_val = 0
+        self.val_dataset = deepcopy(val_dataset)
+        self.select_in = 0
 
     def configure_optimizers(self):
-        model_opt = torch.optim.Adam(self.trainer.model.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
-        temp_opt = torch.optim.Adam([self.temp], lr=5e-1, weight_decay=self.cfg.training.weight_decay)
+        #model_opt = torch.optim.Adam(self.trainer.model.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
+        #model_opt = torch.optim.Adam(self.model.nn.head.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
+        #model_opt = torch.optim.AdamW(self.trainer.model.parameters(), lr=self.cfg.training.lr, betas=(0.9, 0.95))
+        #param_groups = get_parameter_groups(self.trainer.model, weight_decay=0.05)
+        param_groups = get_parameter_groups(self.model.nn.head, weight_decay=0.05)
+        model_opt = torch.optim.AdamW(param_groups, lr=self.cfg.training.lr, betas=(0.9, 0.95))
+        temp_opt = torch.optim.Adam([self.temp], lr=self.cfg.training.temp_lr, weight_decay=self.cfg.training.weight_decay) # even if the LR is 0, it will move a little
 
-        return model_opt, temp_opt
+        #warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda=lambda x: min(x/5000, 1.))
+        warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda=lambda x: 1.)
+        #return model_opt, temp_opt
+        return (
+            {
+                "optimizer": model_opt,
+                "lr_scheduler": {
+                    "scheduler": warmup_scheduler,
+                }
+            },
+            { "optimizer": temp_opt }
+        )
 
     def chunk(self, x):
         bsz = x.shape[0]
@@ -510,10 +412,18 @@ class OverfitSoftLearner(L.LightningModule):
 
         # Photometric
         #loss, _ = normal_minperblob(outputs['weights'], outputs["src_up"], outputs["tgt"], self.model.weight_sl, self.model.downsample_factor, self.model.filter_zoom, flatness=self.cfg.model.charbonnier_flatness)
-        if occ_mask is not None:
-            loss = criterion(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask), self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask)
+        if self.cfg.model.border_handling in ["fourth_channel", "pad_feats"]:
+            border_weights = outputs["out"][:, :, -1, None].detach()
+            outputs["out"] = outputs["out"][:, :, :-1]
         else:
-            loss = criterion(outputs["out"], outputs["tgt"], self.cfg.model.charbonnier_flatness)
+            border_weights = torch.ones_like(outputs["out"])
+
+        if occ_mask is not None:
+            #loss = criterion(outputs["out"]*(1-occ_mask)*border_weights, outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask)
+            loss = criterion(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask)
+        else:
+            #loss = criterion(outputs["out"]*border_weights, outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
+            loss = criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
 
         if self.three_frames:
             temp_smooth_reg = temporal_smoothness_loss(outputs['positions'])
@@ -534,8 +444,6 @@ class OverfitSoftLearner(L.LightningModule):
 
         entropy_reg = entropy_loss(outputs['weights'])
         loss += entropy_reg * self.cfg.model.entropy
-
-        #loss += 0.0 * outputs['loss']
 
         #loss += 5e-5 * bijectivity_loss(outputs, downsample_factor=self.downsample_factor)
 
@@ -562,8 +470,14 @@ class OverfitSoftLearner(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         model_opt, temp_opt = self.optimizers()
+        sched = self.lr_schedulers()
         model_opt.zero_grad()
         temp_opt.zero_grad()
+        """
+        if self.cfg.training.temp_lr == 0.: # force the temp to not move
+            with torch.no_grad():
+                self.temp.copy_(torch.Tensor([self.cfg.model.temp]).to(self.temp.data.device))
+        """
 
         if self.bisided:
             assert(not self.three_frames)
@@ -571,6 +485,13 @@ class OverfitSoftLearner(L.LightningModule):
                                  temp=self.temp,  
                                  src_idx=[2,1],
                                  tgt_idx=[1,2])
+        elif self.cfg.model.bisided_alternating:
+            assert(not self.three_frames)
+            outputs = self.model(batch,#Batch.index(batch, [2, 1]), 
+                                 temp=self.temp,  
+                                 src_idx=[2-self.select_in],
+                                 tgt_idx=[1+self.select_in])
+            self.select_in = (self.select_in + 1) % 2
         elif self.three_frames:
             outputs = self.model(batch,
                                  temp=self.temp, 
@@ -621,6 +542,7 @@ class OverfitSoftLearner(L.LightningModule):
         self.manual_backward(loss)
         model_opt.step()
         temp_opt.step()
+        sched.step()
 
     def validation_step(self, batch, batch_idx):
         check_flow = None if batch.flow is None else batch.flow[0]
@@ -896,21 +818,42 @@ class OverfitSoftLearner(L.LightningModule):
                 self.logger.log_image(key='occ_mask', images=self.chunk(occ_mask_vis), step=self.global_step) # grayscale image of the expected norm of the flow
                 self.logger.log_image(key='colorwheel', images=self.chunk(wheel_flow), step=self.global_step) # grayscale image of the expected norm of the flow
 
-                if self.cfg.model.cost_method in ['feats', 'nn']:
-                    if self.cfg.model.cost_method == 'feats':
+                if self.cfg.validation.full_val_every is not None and self.global_step - self.last_full_val >= self.cfg.validation.full_val_every:
+                    if self.val_dataset is not None:
+                        import src.evaluation as evaluation
+                        self.val_dataset.return_uncropped = True
+                        def model_fwd(b):
+                            b.to(batch.frames[0].device)
+                            #return tiled_pred(self.model, lambda x, y: torch.nanmean(torch.linalg.norm(x - y, dim=1)), b, temp=self.temp)[0]
+                            return tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp)
+                            print("fake model fwd!!")
+                            #return tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp) * b.masks["not_occ"] + b.masks["occ"] * b.flow[0]
+                        full_out = evaluation.evaluate(self.val_dataset, model_fwd, cfg=self.cfg)
+                        self.logger.log_image(key="FULL_random", images=[full_out["random"]])
+                        self.logger.log_image(key="FULL_worst", images=[full_out["worst"]])
+                        self.logger.log_image(key="FULL_best", images=[full_out["best"]])
+                        self.log_dict({"FULL_" + k: v.nanmean().item() for k, v in full_out["metrics"].items()}, batch_size=batch.frames[0].shape[0])
+                        print({"FULL_" + k: v.nanmean().item() for k, v in full_out["metrics"].items()})
+
+                if self.cfg.cost.method in ['feats', 'nn']:
+                    if self.cfg.cost.method == 'feats':
                         src_feats = self.model.feats[:, 0, None] / torch.linalg.norm(self.model.feats[:, 0, None], dim=2, keepdim=True)
                         tgt_feats = self.model.feats[:, 1, None] / torch.linalg.norm(self.model.feats[:, 1, None], dim=2, keepdim=True)
                     else:
-                        src_feats = self.model.nn(batch.frames[2], batch.frames[1])[0][:, None]
-                        tgt_feats = self.model.nn(batch.frames[1], batch.frames[2])[0][:, None]
+                        if self.model.border_handling == "pad_feats":
+                            t_patch = math.ceil((self.model.weight_sl//2)/16)*16
+                            input_2 = torch.nn.functional.pad(batch.frames[2], (t_patch, t_patch, t_patch, t_patch), mode="constant")
+                            input_1 = torch.nn.functional.pad(batch.frames[1], (t_patch, t_patch, t_patch, t_patch), mode="constant")
+                        src_feats = self.model.nn(input_2, input_1)
+                        tgt_feats = self.model.nn(input_1, input_2)
                         #src_feats = self.model.nn(torch.cat((batch.frames[2], batch.frames[1]), dim=1))[0][:, None]
                         #src_feats, tgt_feats = torch.chunk(src_feats, 2, dim=2)
-                        src_feats = src_feats / torch.linalg.norm(src_feats, dim=2, keepdim=True)
-                        tgt_feats = tgt_feats / torch.linalg.norm(tgt_feats, dim=2, keepdim=True)
+                        src_feats = src_feats / torch.linalg.norm(src_feats, dim=1, keepdim=True)
+                        tgt_feats = tgt_feats / torch.linalg.norm(tgt_feats, dim=1, keepdim=True)
                     #src_atan = torchvision.utils.flow_to_image(src_feats[0, :])
                     #tgt_atan = torchvision.utils.flow_to_image(tgt_feats[0, :])
-                    src_feats = (torch.permute(src_feats[0], (1, 0, 2, 3)) * 0.5 + 0.5) * 255
-                    tgt_feats = (torch.permute(tgt_feats[0], (1, 0, 2, 3)) * 0.5 + 0.5) * 255
+                    src_feats = (torch.permute(src_feats, (1, 0, 2, 3)) * 0.5 + 0.5) * 255
+                    tgt_feats = (torch.permute(tgt_feats, (1, 0, 2, 3)) * 0.5 + 0.5) * 255
                     self.logger.log_image(key='src_feats', images=self.chunk(src_feats), step=self.global_step)
                     self.logger.log_image(key='tgt_feats', images=self.chunk(tgt_feats), step=self.global_step)
                     """

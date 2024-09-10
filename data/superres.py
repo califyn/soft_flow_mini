@@ -70,7 +70,7 @@ class Batch():
             None if list_instances[0].flow is None else [torch.stack([b.flow[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].flow))],
             None if list_instances[0].flow is None else [torch.stack([b.flow_orig[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].flow_orig))],
             [b.path for b in list_instances],
-            {name: torch.stack([b.masks[name] for b in list_instances], dim=0) for name in list_instances[0].masks.keys()},
+            masks={name: torch.stack([b.masks[name] for b in list_instances], dim=0) for name in list_instances[0].masks.keys()},
         )
 
     @staticmethod
@@ -133,12 +133,15 @@ class SuperResDataset():
         self.split = split 
         self.idx = cfg.dataset.idx
         self.augmentations = cfg.dataset.augmentations
+        self.crop_to = None if cfg.dataset.crop_to is None else [int(x) for x in cfg.dataset.crop_to.split(",")]
 
         self.load_paths(cfg, split)
         self.transform = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
         self.flow_multiplier = 1 # 2 for spring, 1 otherwise
         self.collate_different_shapes_mode = "error"
+        self.iters = 0 # for validation randomness
+        self.return_uncropped = False
 
     def load_paths(self, *args, **kwargs):
         raise NotImplementedError("need specific dataset!")
@@ -154,6 +157,8 @@ class SuperResDataset():
         saturation = lambda x: transforms.functional.adjust_saturation(x, jitter_params[3])
         hue = lambda x: transforms.functional.adjust_hue(x, jitter_params[4])
         transforms_list = [brightness, contrast, saturation, hue]
+        
+        
 
         transformed_imgs = []
         for img in imgs:
@@ -164,6 +169,7 @@ class SuperResDataset():
         return transformed_imgs
 
     def set_imsz(self, input_imsz):
+        self.imsz_super_orig = self.imsz_super
         max_res_ratio = max(self.imsz_res, self.imsz_super_res)
         #if input_imsz[0] % max_res_ratio != 0 or input_imsz[1] % max_res_ratio != 0:
         x_excess, y_excess = input_imsz[0] % max_res_ratio, input_imsz[1] % max_res_ratio
@@ -185,6 +191,37 @@ class SuperResDataset():
 
         return img
 
+    def crop(self, img, image_trim):
+        if image_trim[1] > 0:
+            img = img[..., :-image_trim[1], :]
+        if image_trim[3] > 0:
+            img = img[..., :, :-image_trim[3]]
+        img = img[..., image_trim[0]:, image_trim[2]:]
+        """
+
+        if image_trim[0] < 0:
+            img = torch.nn.functional.pad(img, (0, 0, -image_trim[0], 0), mode="constant")
+        else image_trim[0] > 0:
+            img = img[:, image_trim[0]:, :]
+
+        if image_trim[1] < 0:
+            img = torch.nn.functional.pad(img, (0, 0, 0, -image_trim[1]), mode="constant")
+        else image_trim[1] > 0:
+            img = img[:, :-image_trim[1], :]
+
+        if image_trim[2] < 0:
+            img = torch.nn.functional.pad(img, (-image_trim[2], 0, 0, 0), mode="constant")
+        else image_trim[2] > 0:
+            img = img[:, :, image_trim[2]:]
+
+        if image_trim[3] < 0:
+            img = torch.nn.functional.pad(img, (0, -image_trim[3], 0, 0), mode="constant")
+        else image_trim[3] > 0:
+            img = img[:, :, :-image_trim[3]]
+ 
+        """
+        return img
+
     def gen_flow_masks(self, flow_orig, shrink=False):
         assert(len(flow_orig) == 1)
         flow_mags = torch.linalg.norm(flow_orig[0], dim=0, keepdim=True)
@@ -197,10 +234,50 @@ class SuperResDataset():
 
     def gen_inverse_masks(self, masks):
         not_masks = {"not_" + name: 1-mask for name, mask in masks.items()}
+        #print(list(not_masks.items())[0][1].min())
+        print(list(set(list(not_masks.items())[0][1].cpu().detach().numpy().flatten().tolist())))
 
         return masks | not_masks
 
+    def crop_batch(self, batch, crop=None, idx=None):
+        # ONLY APPLY THIS ONCE ! Flow orig will get messed up applying this multiple times
+        batch = deepcopy(batch)
+
+        if crop is None:
+            x_extra = batch.frames[0].shape[1] - self.crop_to[0]
+            y_extra = batch.frames[0].shape[2] - self.crop_to[1]
+            if self.augmentations.random_crop:
+                if self.split == "validation":
+                    random.seed(1000 * (self.iters % 4) + idx)
+                x1 = int(random.random() * x_extra)
+                y1 = int(random.random() * y_extra)
+            else:
+                x1 = (x_extra + 1) // 2
+                y1 = (y_extra + 1) // 2
+            x2 = x_extra - x1
+            y2 = y_extra - y1
+        else:
+           x1, x2, y1, y2 = crop
+        
+        up_ratio = batch.frames_up[0].shape[2] // batch.frames[0].shape[2]
+        for i, p in enumerate(batch.frames):
+            batch.frames[i] = self.crop(p, [x1, x2, y1, y2])
+        for i, p in enumerate(batch.frames_up):
+            batch.frames_up[i] = self.crop(p, [x1 * up_ratio, x2 * up_ratio, y1 * up_ratio, y2 * up_ratio])
+        for i, p in enumerate(batch.frames_col):
+            batch.frames_col[i] = self.crop(p, [x1, x2, y1, y2])
+        for i, p in enumerate(batch.frames_up_col):
+            batch.frames_up_col[i] = self.crop(p, [x1 * up_ratio, x2 * up_ratio, y1 * up_ratio, y2 * up_ratio])
+        for i, p in enumerate(batch.flow):
+            batch.flow[i] = self.crop(p, [x1, x2, y1, y2])
+        up_ratio *= self.imsz_super_res
+        for i, p in enumerate(batch.flow_orig):
+            batch.flow_orig[i] = self.crop(p, [x1 * up_ratio + self.image_trim[2], x2 * up_ratio + self.image_trim[3], y1 * up_ratio + self.image_trim[0], y2 * up_ratio + self.image_trim[1]])
+        return batch
+
     def __getitem__(self, idx):
+        if idx == 0:
+            self.iters += 1
         idx += self.idx
         frame_paths = self.frame_paths[idx]
         if self.flow_paths is not None:
@@ -219,6 +296,7 @@ class SuperResDataset():
             masks[name] = torch.Tensor(masks[name])[None, ..., 0]
             if masks[name].shape[1] == 2 * image[0].shape[0] and masks[name].shape[2] == 2 * image[0].shape[1]:
                 masks[name] = masks[name][:, ::2, ::2]
+            masks[name][masks[name]==255] = 1
 
         if self.imsz is None:
             self.set_imsz((image[0].shape[1], image[0].shape[0]))
@@ -267,24 +345,6 @@ class SuperResDataset():
         for i, p in enumerate(image_up):
             image_up[i] = transforms.functional.to_tensor(p)
 
-        """
-        # Random crop augmentation
-        if self.augmentations.random_crop:
-            y = int(random.random() * 800)
-            x = int(random.random() * 212)
-        else:
-            y = 400 # half of the set values
-            x = 106
-        image1 = image1[:, x:x-212, y:y-800]
-        image2 = image2[:, x:x-212, y:y-800]
-        image3 = image3[:, x:x-212, y:y-800]
-        flow = flow[:, x:x-212, y:y-800]
-        image1_sup = image1_sup[:, x:x-212, y:y-800]
-        image2_sup = image2_sup[:, x:x-212, y:y-800]
-        image3_sup = image3_sup[:, x:x-212, y:y-800]
-        """
-        #flow_orig = flow
-
         # Color augmentation
         image_col, image_up_col = [], []
         if self.augmentations.color:
@@ -300,10 +360,6 @@ class SuperResDataset():
             image[i] = self.transform(p)
         for i, p in enumerate(image_up):
             image_up[i] = self.transform(p)
-        """
-        for i, p in enumerate(image_up):
-            image_orig[i] = self.transform(p)
-        """
         for i, p in enumerate(image_col):
             image_col[i] = self.transform(p)
         for i, p in enumerate(image_up_col):
@@ -314,5 +370,9 @@ class SuperResDataset():
         if flow_orig[0].shape[1] == 2 * image_orig[0].shape[1] and flow_orig[0].shape[2] == 2 * image_orig[0].shape[2]:
             flow_masks = {k: v[:, ::2, ::2] for k, v in flow_masks.items()}
         masks = masks | flow_masks
-
-        return Batch(image, image_up, image_orig, image_col, image_up_col, flow, flow_orig, frame_paths[1], masks=masks, collate_different_shapes=self.collate_different_shapes_mode)
+        
+        batch = Batch(image, image_up, image_orig, image_col, image_up_col, flow, flow_orig, frame_paths[1], masks=masks, collate_different_shapes=self.collate_different_shapes_mode)
+        if not self.return_uncropped and self.crop_to is not None:
+            batch = self.crop_batch(batch, idx=idx)
+         
+        return batch
