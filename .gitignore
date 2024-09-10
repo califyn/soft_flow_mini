@@ -6,6 +6,7 @@ __pycache__/
 *.png
 *.pt
 *.ckpt
+*.swp
 
 soft_flow/
 datasets/
