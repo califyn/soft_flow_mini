@@ -22,6 +22,8 @@ from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.strategies.ddp import DDPStrategy
 
 def run(cfg: DictConfig):
+    print("Running...", flush=True)
+    print("CUDA is available:", torch.cuda.is_available(), flush=True)
     # Set up dataset and dataloader
     if cfg.dataset.dataset == "sintel":
         train_dataset = SintelSuperResDataset(cfg, cfg.dataset.train_split)
@@ -48,10 +50,11 @@ def run(cfg: DictConfig):
     val_dataloader = torch.utils.data.DataLoader(
                 val_dataset,
                 batch_size=cfg.validation.data.batch_size,
-                num_workers=1,
+                num_workers=5,
                 shuffle=False,
                 collate_fn=Batch.collate_fn
             )
+    print("Dataset loaded...", flush=True)
 
     # Set image size
     _ = train_dataset[0] # get image size
@@ -65,6 +68,7 @@ def run(cfg: DictConfig):
 
     # Create model
     model = OverfitSoftLearner(cfg, val_dataset=val_dataset)
+    print("Model created...", flush=True)
 
     # Enforce the correct Python version.
     if sys.version_info.major < 3 or sys.version_info.minor < 9:
@@ -74,16 +78,18 @@ def run(cfg: DictConfig):
         )
 
     # Set up logging with wandb.
+    with open("wandb_api_key.txt", "r") as f:
+        wandb.login(key=f.readline().strip('\n'))
+
     if cfg.wandb.mode != "disabled":
         # If resuming, merge into the existing run on wandb.
-        resume_id = cfg.wandb.get("resume", None)
         logger = WandbLogger(
             project=cfg.wandb.project,
             mode=cfg.wandb.mode,
             name=cfg.wandb.name,
             log_model="all",
             config=OmegaConf.to_container(cfg),
-            id=None if cfg.wandb.get("use_new_id", False) else resume_id,
+            id=cfg.wandb.get("id", None),
         )
 
         # On rank != 0, wandb.run is None.
@@ -94,13 +100,17 @@ def run(cfg: DictConfig):
         logger = None
 
     # If resuming a run, download the checkpoint.
-    if resume_id is not None:
-        run_path = f"{cfg.wandb.entity}/{cfg.wandb.project}/{resume_id}"
+    if cfg.wandb.get("resume", None) is not None:
+        run_path = f"{cfg.wandb.entity}/{cfg.wandb.project}/{cfg.wandb.resume}"
         print(run_path)
-        checkpoint_path = download_latest_checkpoint(
-            run_path, Path("outputs/loaded_checkpoints")
-        )
-        checkpoint_path = rewrite_checkpoint_for_compatibility(checkpoint_path)
+        try:
+            checkpoint_path = download_latest_checkpoint(
+                run_path, Path("outputs/loaded_checkpoints")
+            )
+            checkpoint_path = rewrite_checkpoint_for_compatibility(checkpoint_path)
+        except (ValueError, wandb.errors.CommError) as e:
+            print("Could not find run with run id {cfg.wandb.resume}")
+            checkpoint_path = None
     else:
         checkpoint_path = None
 
@@ -110,6 +120,7 @@ def run(cfg: DictConfig):
             ]
 
     # Initialize Pytorch Lightning trainer
+    print("Creating trainer...", flush=True)
     trainer = L.Trainer(
         max_epochs=-1,
         accelerator='auto',
@@ -125,6 +136,7 @@ def run(cfg: DictConfig):
     )
     #accumulate_grad_batches=None if "accumulate" not in dir(cfg.training) else cfg.training.accumulate
 
+    print("About to train...", flush=True)
     # Training happens here
     trainer.fit(
         model,
@@ -134,14 +146,21 @@ def run(cfg: DictConfig):
     )
 
 if __name__ == "__main__":
+    print("Just received...", flush=True)
     parser = argparse.ArgumentParser()
     parser.add_argument('-n','--name', required=True)
     parser.add_argument('-m','--mode', required=True)
     parser.add_argument('-c','--config', default="overfit")
+    parser.add_argument('-r','--resume', default=None)
+    parser.add_argument('-d','--id', default=None)
 
     args = parser.parse_args()
     cfg = OmegaConf.load(args.config + '.yaml')
     cfg.wandb.name = args.name
     cfg.wandb.mode = args.mode
+    cfg.wandb.id = args.id
+    cfg.wandb.resume = args.resume
+    if cfg.wandb.resume == "allow":
+        cfg.wandb.resume = cfg.wandb.id # resumes the run if it already exists
 
     run(cfg)

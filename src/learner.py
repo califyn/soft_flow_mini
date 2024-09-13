@@ -30,6 +30,8 @@ from PIL import Image
 import torchvision.transforms
 from torchvision.transforms import ToTensor, Normalize, Compose
 
+import wandb
+
 def patchify(p, imgs):
     """
     imgs: (B, 3, H, W)
@@ -64,7 +66,8 @@ def unpatchify(patch_size, h, w, x):
 class CroCoWrapper(torch.nn.Module):
     def __init__(self, feat_dim,):
         super(CroCoWrapper, self).__init__()
-        ckpt = torch.load('/home/califyn/croco/pretrained_models/CroCo_V2_ViTBase_SmallDecoder.pth', 'cpu')
+        #ckpt = torch.load('/home/califyn/croco/pretrained_models/CroCo_V2_ViTBase_SmallDecoder.pth', 'cpu')
+        ckpt = torch.load('./CroCo_V2_ViTBase_SmallDecoder.pth', 'cpu')
         model = CroCoNet( **ckpt.get('croco_kwargs',{}))
         msg = model.load_state_dict(ckpt['model'], strict=True)
     
@@ -96,7 +99,8 @@ class CroCoWrapper(torch.nn.Module):
 class CroCoDPTWrapper(torch.nn.Module):
     def __init__(self, feat_dim, img_size):
         super(CroCoDPTWrapper, self).__init__()
-        ckpt = torch.load('/home/califyn/croco/pretrained_models/CroCo_V2_ViTBase_SmallDecoder.pth', 'cpu')
+        #ckpt = torch.load('/home/califyn/croco/pretrained_models/CroCo_V2_ViTBase_SmallDecoder.pth', 'cpu')
+        ckpt = torch.load('./CroCo_V2_ViTBase_SmallDecoder.pth', 'cpu')
 
         croco_args = croco_args_from_ckpt(ckpt)
         croco_args['img_size'] = (img_size[1], img_size[0])
@@ -117,7 +121,7 @@ class CroCoDPTWrapper(torch.nn.Module):
         self.feat_dim = feat_dim
 
     def forward(self, img1, img2=None):
-        #self.model.patch_embed.img_size = img1.shape[-2:]
+        self.model.patch_embed.img_size = img1.shape[-2:]
         #out, _, _ = self.model(img1, img2)
         #out, _, _ = self.model(img1, img1)
         #return self.model.unpatchify(out, channels=self.feat_dim, h=img1.shape[-2]//16, w=img1.shape[-1]//16)
@@ -135,7 +139,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
         self.n_frames = n_feats
         self.weight_sl = weight_sl
         self.downsample_factor = downsample_factor
-        self.border_handling = cfg.model.border_handling
+        self.border_handling = None #cfg.model.border_handling
         self.filter_zoom = filter_zoom
         assert((weight_sl + downsample_factor - 1) % filter_zoom == 0)
         #assert((weight_sl + downsample_factor - 1) % (2 * downsample_factor) == downsample_factor)
@@ -380,12 +384,16 @@ class OverfitSoftLearner(L.LightningModule):
         #model_opt = torch.optim.Adam(self.model.nn.head.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
         #model_opt = torch.optim.AdamW(self.trainer.model.parameters(), lr=self.cfg.training.lr, betas=(0.9, 0.95))
         #param_groups = get_parameter_groups(self.trainer.model, weight_decay=0.05)
-        param_groups = get_parameter_groups(self.model.nn.head, weight_decay=0.05)
-        model_opt = torch.optim.AdamW(param_groups, lr=self.cfg.training.lr, betas=(0.9, 0.95))
+        if self.cfg.cost.model == "croco_dpt":
+            param_groups = get_parameter_groups(self.model.nn.head, weight_decay=0.05)
+            model_opt = torch.optim.AdamW(param_groups, lr=self.cfg.training.lr, betas=(0.9, 0.95))
+        else:
+            model_opt = torch.optim.Adam(self.trainer.model.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
         temp_opt = torch.optim.Adam([self.temp], lr=self.cfg.training.temp_lr, weight_decay=self.cfg.training.weight_decay) # even if the LR is 0, it will move a little
 
         #warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda=lambda x: min(x/5000, 1.))
-        warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda=lambda x: 1.)
+        #warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda=lambda x: 1.)
+        warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda=lambda x: self.cfg.training.high_lr/self.cfg.training.lr if x <= self.cfg.training.high_lr_steps else 1)
         #return model_opt, temp_opt
         return (
             {
@@ -412,7 +420,7 @@ class OverfitSoftLearner(L.LightningModule):
 
         # Photometric
         #loss, _ = normal_minperblob(outputs['weights'], outputs["src_up"], outputs["tgt"], self.model.weight_sl, self.model.downsample_factor, self.model.filter_zoom, flatness=self.cfg.model.charbonnier_flatness)
-        if self.cfg.model.border_handling in ["fourth_channel", "pad_feats"]:
+        if self.model.border_handling in ["fourth_channel", "pad_feats"]:
             border_weights = outputs["out"][:, :, -1, None].detach()
             outputs["out"] = outputs["out"][:, :, :-1]
         else:
@@ -467,6 +475,33 @@ class OverfitSoftLearner(L.LightningModule):
             raise ValueError(f'GT flow is too large--max flow is {flow_max} but max possible is {self.model.max_size}')
         else:
             return flow_max
+    
+    def on_save_checkpoint(self, checkpoint):
+        # Keep last checkpoint on wandb
+        # I think this should be run before the checkpoint on wandb, so <=2 at once
+        
+        if self.logger is not None:
+            #run = self.logger.experiment
+            if self.cfg.wandb.mode == "online":
+                api = wandb.Api()
+                entity, project, exp_id = self.cfg.wandb.entity, self.cfg.wandb.project, self.logger._id
+                run = api.run(f"{entity}/{project}/{exp_id}")
+                for artifact in run.logged_artifacts():
+                    if len(artifact.aliases) == 0:
+                        artifact.delete()
+                """
+                latest = None
+                for artifact in runs.logged_artifacts():
+                    version = int(artifact.version[1:])
+                    if latest is None or version > latest:
+                        latest = version
+
+                if latest is not None:
+                    for artifact in runs.logged_artifacts():
+                        if int(artifact.version[1:]) < latest:
+                            artifact.delete(delete_aliases=True) # delete non latest artifacts
+                """
+
 
     def training_step(self, batch, batch_idx):
         model_opt, temp_opt = self.optimizers()
@@ -844,6 +879,8 @@ class OverfitSoftLearner(L.LightningModule):
                             t_patch = math.ceil((self.model.weight_sl//2)/16)*16
                             input_2 = torch.nn.functional.pad(batch.frames[2], (t_patch, t_patch, t_patch, t_patch), mode="constant")
                             input_1 = torch.nn.functional.pad(batch.frames[1], (t_patch, t_patch, t_patch, t_patch), mode="constant")
+                        else:
+                            input_2, input_1 = batch.frames[2], batch.frames[1]
                         src_feats = self.model.nn(input_2, input_1)
                         tgt_feats = self.model.nn(input_1, input_2)
                         #src_feats = self.model.nn(torch.cat((batch.frames[2], batch.frames[1]), dim=1))[0][:, None]
@@ -870,6 +907,10 @@ class OverfitSoftLearner(L.LightningModule):
                             print(f"New temp: {self.temp}")
                     """
                     self.old_epe_full = epe_full
+            
+            if self.global_step > self.cfg.model.border_handling_on:
+                print("Turning border handling on...")
+                self.model.border_handling = self.cfg.model.border_handling
 
 def compute_epe(gt, pred, scale_to=None):
     _, _, h_pred, w_pred = pred.size()

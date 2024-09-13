@@ -7,6 +7,7 @@ __pycache__/
 *.pt
 *.ckpt
 *.swp
+*.pth
 
 soft_flow/
 datasets/
@@ -17,3 +18,10 @@ logs/
 
 models/curope/build/*
 models/curope/curope.cpython-310-x86_64-linux-gnu.so
+
+wandb_api_key.txt
+
+RAFT/
+
+job.sh
+slurm_logs/

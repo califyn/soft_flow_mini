@@ -7,7 +7,7 @@ wandb:
     entity: califyn
 model:
     three_frames: false
-    weight_sl: 31
+    weight_sl: 11
     downsample_factor: 1
     filter_zoom: 1
     smoothness: 2.5e-1
@@ -16,7 +16,7 @@ model:
     frameskip: 1
     norm: 0.0
     entropy: 0.0 #1e2
-    feat_dim: 32 #12 #32 #28 #128
+    feat_dim: 8 #12 #32 #28 #128
     temp: 9 #0.1
     temp_scheduling: false 
     charbonnier_flatness: 0.0 #1e-1
@@ -39,7 +39,7 @@ dataset:
     augmentations:
         random_crop: true
         color: false
-    flow_max: 15
+    flow_max: 5
     crop_to: 224,224
 training:
     precision: 32
@@ -52,11 +52,11 @@ training:
     high_lr_steps: 1000
     temp_lr: 3e-4 #5e-2
     weight_decay: 0.
-    ckpt_every: 50000
+    ckpt_every: 10000
 validation:
     check_epoch: 25
     limit_batch: 64
-    check_interval: 250 
+    check_interval: 20 
     full_val_every: null #50000 
     data:
         batch_size: 1

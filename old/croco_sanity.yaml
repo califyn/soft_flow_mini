@@ -24,8 +24,8 @@ model:
     bisided_alternating: false
     fft_filter: null #butter #rect
     fft: 1e-1 #65,95 for rect
-    border_handling: pad_feats #fourth_channel #pad_feats
-    border_handling_on: 20000 #10000000
+    border_handling: null #pad_feats #fourth_channel #pad_feats
+    border_handling_on: 1000000
 cost:
     method: nn
     model: croco_dpt
@@ -48,14 +48,12 @@ training:
         shuffle: true
     overfit_batch: 0.0 #1 # 0.0 to turn off
     lr: 2e-5
-    high_lr: 3e-4
-    high_lr_steps: 1000
-    temp_lr: 3e-4 #5e-2
+    temp_lr: 3e-4 # 5e-2
     weight_decay: 0.
     ckpt_every: 50000
 validation:
-    check_epoch: 25
-    limit_batch: 64
+    check_epoch: 1
+    limit_batch: 3 
     check_interval: 250 
     full_val_every: null #50000 
     data:

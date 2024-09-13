@@ -234,8 +234,6 @@ class SuperResDataset():
 
     def gen_inverse_masks(self, masks):
         not_masks = {"not_" + name: 1-mask for name, mask in masks.items()}
-        #print(list(not_masks.items())[0][1].min())
-        print(list(set(list(not_masks.items())[0][1].cpu().detach().numpy().flatten().tolist())))
 
         return masks | not_masks
 
@@ -248,7 +246,8 @@ class SuperResDataset():
             y_extra = batch.frames[0].shape[2] - self.crop_to[1]
             if self.augmentations.random_crop:
                 if self.split == "validation":
-                    random.seed(1000 * (self.iters % 4) + idx)
+                    #random.seed(1000 * (self.iters % 4) + idx)
+                    random.seed(1000 * 1 + idx)
                 x1 = int(random.random() * x_extra)
                 y1 = int(random.random() * y_extra)
             else:
