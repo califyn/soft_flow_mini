@@ -139,7 +139,10 @@ class SoftMultiFramePredictor(torch.nn.Module):
         self.n_frames = n_feats
         self.weight_sl = weight_sl
         self.downsample_factor = downsample_factor
-        self.border_handling = None #cfg.model.border_handling
+        if cfg.model.border_handling_on >= 0:
+            self.border_handling = None #cfg.model.border_handling
+        else:
+            self.border_handling = cfg.model.border_handling
         self.filter_zoom = filter_zoom
         assert((weight_sl + downsample_factor - 1) % filter_zoom == 0)
         #assert((weight_sl + downsample_factor - 1) % (2 * downsample_factor) == downsample_factor)
@@ -364,14 +367,7 @@ class OverfitSoftLearner(L.LightningModule):
         assert(imsz_sm[0] * self.downsample_factor == imsz_lg[0])
         assert(imsz_sm[1] * self.downsample_factor == imsz_lg[1])
 
-        if self.three_frames:
-            self.model = SoftMultiFramePredictor(cfg, 3, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom, feat_dim=cfg.model.feat_dim) # 123 for num. 11
-        else:
-            if self.bisided and self.cfg.cost.method == "weights":
-                self.model = SoftMultiFramePredictor(cfg, 3, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom, feat_dim=cfg.model.feat_dim) # 123 for num. 11
-            else:
-                #self.model = SoftMultiFramePredictor(cfg, 2, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom, feat_dim=cfg.model.feat_dim) # 123 for num. 11
-                self.model = SoftMultiFramePredictor(cfg, 3, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom, feat_dim=cfg.model.feat_dim) # 123 for num. 11
+        self.model = SoftMultiFramePredictor(cfg, 3, downsample_factor=self.downsample_factor, weight_sl=self.weight_sl, filter_zoom=self.filter_zoom, feat_dim=cfg.model.feat_dim) # 123 for num. 11
 
         self.old_epe_full = None
         self.automatic_optimization = False
@@ -428,10 +424,16 @@ class OverfitSoftLearner(L.LightningModule):
 
         if occ_mask is not None:
             #loss = criterion(outputs["out"]*(1-occ_mask)*border_weights, outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask)
-            loss = criterion(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask)
+            if self.three_frames:
+                loss = 0.5 * (criterion_min(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask) + criterion(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask))
+            else:
+                loss = criterion(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask)
         else:
             #loss = criterion(outputs["out"]*border_weights, outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
-            loss = criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
+            if self.three_frames:
+                loss = 0.5 * (criterion_min(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness) + criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness))
+            else:
+                loss = criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
 
         if self.three_frames:
             temp_smooth_reg = temporal_smoothness_loss(outputs['positions'])
@@ -441,7 +443,8 @@ class OverfitSoftLearner(L.LightningModule):
         if occ_mask is not None:
             occ_mask = occ_mask.float()
         #spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=outputs['tgt'], occ_mask=occ_mask)
-        spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=None, occ_mask=None)
+        spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=outputs['tgt'], edge_weight=self.cfg.model.smoothness_edge, occ_mask=None)
+        #spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=None, occ_mask=None)
         loss += spat_smooth_reg * self.cfg.model.smoothness * (self.model.true_sl ** 2) # finally weighing this #2.8e4 #* (61/31) * (61/31) # for sintel
 
         spat_smooth_reg = position_spat_smoothness(outputs['positions'])
@@ -909,7 +912,6 @@ class OverfitSoftLearner(L.LightningModule):
                     self.old_epe_full = epe_full
             
             if self.global_step > self.cfg.model.border_handling_on:
-                print("Turning border handling on...")
                 self.model.border_handling = self.cfg.model.border_handling
 
 def compute_epe(gt, pred, scale_to=None):

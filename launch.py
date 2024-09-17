@@ -2,6 +2,10 @@ import argparse
 import time
 import subprocess
 
+process = subprocess.Popen(['sinfo'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+out, err = process.communicate()
+print(out)
+
 job = """#!/bin/bash
 
 #SBATCH -J soft_flow_{name}
@@ -13,7 +17,7 @@ job = """#!/bin/bash
 #SBATCH --time={hours}:0:0
 #SBATCH --mem={memory}
 #SBATCH --partition=vision-sitzmann
-#SBATCH --qos=vision-sitzmann-low
+#SBATCH --qos=vision-sitzmann-main
 #SBATCH --cpus-per-task=32
 #SBATCH --requeue
 
