@@ -8,6 +8,7 @@ from data.llff_superres import LLFFSuperResDataset
 from data.pokemon_superres import PokemonSuperResDataset
 from data.spring_superres import SpringSuperResDataset
 from data.kitti_superres import KITTISuperResDataset
+from data.roaming_images import RoamingImagesDataset
 from data.superres import Batch
 from src.learner import OverfitSoftLearner
 
@@ -40,6 +41,9 @@ def run(cfg: DictConfig):
     elif cfg.dataset.dataset == "kitti":
         train_dataset = KITTISuperResDataset(cfg, cfg.dataset.train_split)
         val_dataset = KITTISuperResDataset(cfg, "validation")
+    elif cfg.dataset.dataset == "roaming_images":
+        train_dataset = RoamingImagesDataset(cfg, cfg.dataset.train_split)
+        val_dataset = RoamingImagesDataset(cfg, "validation")
     train_dataloader = torch.utils.data.DataLoader(
                 train_dataset,
                 batch_size=cfg.training.data.batch_size,
@@ -62,9 +66,13 @@ def run(cfg: DictConfig):
         cfg.dataset.imsz = str(train_dataset.imsz[0]) + "," + str(train_dataset.imsz[1])
         cfg.dataset.imsz_super = str(train_dataset.imsz_super[0]) + "," + str(train_dataset.imsz_super[1])
     else:
-        cfg.dataset.imsz = cfg.dataset.crop_to
-        ratio = train_dataset.imsz_super[0] // train_dataset.imsz[0]
-        cfg.dataset.imsz_super = str(int(cfg.dataset.crop_to.split(",")[0]) * ratio) + "," + str(int(cfg.dataset.crop_to.split(",")[1]) * ratio) 
+        if not isinstance(train_dataset, RoamingImagesDataset):
+            cfg.dataset.imsz = cfg.dataset.crop_to
+            ratio = train_dataset.imsz_super[0] // train_dataset.imsz[0]
+            cfg.dataset.imsz_super = str(int(cfg.dataset.crop_to.split(",")[0]) * ratio) + "," + str(int(cfg.dataset.crop_to.split(",")[1]) * ratio) 
+        else:
+            cfg.dataset.imsz = cfg.dataset.crop_to
+            cfg.dataset.imsz_super = cfg.dataset.crop_to
 
     # Create model
     model = OverfitSoftLearner(cfg, val_dataset=val_dataset)

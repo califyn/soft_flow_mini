@@ -176,6 +176,8 @@ class SoftMultiFramePredictor(torch.nn.Module):
             fill_val = (1/feat_dim) ** 0.5
             self.feats = torch.nn.Parameter(torch.full((1, self.n_frames, feat_dim, self.height, self.width), fill_val))
         elif self.method == 'nn':
+            if self.cfg.cost.pred_occ_mask:
+                feat_dim = feat_dim + 1
             if cfg.cost.model == "croco":
                 self.nn = CroCoWrapper(feat_dim)
             elif cfg.cost.model == "croco_dpt":
@@ -184,6 +186,8 @@ class SoftMultiFramePredictor(torch.nn.Module):
                     self.nn = CroCoDPTWrapper(feat_dim, (self.height + 2 * t_patch, self.width + 2 * t_patch))
                 else:
                     self.nn = CroCoDPTWrapper(feat_dim, (self.height, self.width))
+
+        self.nn_pred_occ_mask = cfg.cost.pred_occ_mask
 
     def _get_nd_butterworth_filter(
         self, shape, factor, dtype=torch.float64, squared_butterworth=True
@@ -258,6 +262,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
         src_in = torch.stack([in_down[:, s] for s in src_idx], dim=1)
         tgt_in = torch.stack([in_down[:, t] for t in tgt_idx], dim=1)
 
+        pred_occ_mask = None
         if weights is not None:
             weights = weights.flatten(start_dim=-2)
         else:
@@ -288,6 +293,10 @@ class SoftMultiFramePredictor(torch.nn.Module):
                             src_in_ = torch.nn.functional.pad(src_in_, (t_patch, t_patch, t_patch, t_patch), mode="constant")
                             tgt_in_ = torch.nn.functional.pad(tgt_in_, (t_patch, t_patch, t_patch, t_patch), mode="constant")
                         src_in_, tgt_in_ = self.nn(src_in_, img2=tgt_in_), self.nn(tgt_in_, img2=src_in_)
+                        if self.nn_pred_occ_mask:
+                            pred_occ_mask = torch.reshape(src_in_[:, -1], (in_frames.shape[0], len(src_idx), 1, src_in_.shape[2:]))
+                            src_in_ = src_in_[:, :-1]
+                            tgt_in_ = tgt_in_[:, :-1]
                         if self.border_handling == "pad_feats":
                             trim = t_patch - t
                             if trim > 0:
@@ -344,6 +353,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
                     'src': src_in, 
                     'src_up': src_in_up,
                     'tgt': tgt_in,
+                    'pred_occ_mask': pred_occ_mask,
                 }
 
     def set(self, idx, set_to):
@@ -423,15 +433,26 @@ class OverfitSoftLearner(L.LightningModule):
             border_weights = torch.ones_like(outputs["out"])
 
         if occ_mask is not None:
+            raise ValueError('didnt implement this yet')
             #loss = criterion(outputs["out"]*(1-occ_mask)*border_weights, outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask)
             if self.three_frames:
-                loss = 0.5 * (criterion_min(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask) + criterion(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask))
+                #loss = 0.5 * (criterion_min(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask) + criterion(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask))
+                loss = criterion_min(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask)
             else:
                 loss = criterion(outputs["out"]*(1-occ_mask), outputs["tgt"]*(1-occ_mask)*border_weights, self.cfg.model.charbonnier_flatness)/torch.mean(1-occ_mask)
         else:
             #loss = criterion(outputs["out"]*border_weights, outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
             if self.three_frames:
-                loss = 0.5 * (criterion_min(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness) + criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness))
+                #loss = 0.5 * (criterion_min(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness) + criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness))
+                if self.cfg.cost.pred_occ_mask:
+                    occ_weights = torch.sigmoid(outputs["pred_occ_mask"])
+                    occ_weights = torch.cat((occ_weights, 1-occ_weights), dim=1)
+                    print(occ_weights.shape, outputs["out"].shape)
+                    input("?")
+                    loss = criterion(outputs["out"]*occ_weights, outputs["tgt"]*border_weights*occ_weights, self.cfg.model.charbonnier_flatness)
+                    loss += (0.25 - occ_weights[:, 0] * occ_weights[:, 1]) * 0.1
+                else:
+                    loss = criterion_min(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
             else:
                 loss = criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
 
@@ -772,7 +793,10 @@ class OverfitSoftLearner(L.LightningModule):
                 match_mask = torch.zeros_like(occ_mask)
                 conv_match_occ = torch.zeros_like(occ_mask)
             """
-            occ_mask = torch.zeros_like(gt_flow_orig[:, 0, None])
+            if self.cfg.cost.pred_occ_mask:
+                occ_mask = outputs["pred_occ_mask"]
+            else:
+                occ_mask = torch.zeros_like(gt_flow_orig[:, 0, None])
             match_mask = torch.zeros_like(gt_flow_orig[:, 0, None])
             conv_match_occ = torch.zeros_like(gt_flow_orig[:, 0, None])
             occ_epe = 0.0
