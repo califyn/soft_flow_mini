@@ -104,6 +104,15 @@ class RoamingImagesDataset():
         image3 = image3.permute(0, 2, 1)
         flow = flow.permute(0, 2, 1).flip(0)
 
+        mask_cur = torch.zeros((1, self.crop_to[0], self.crop_to[1]))
+        mask_fut = torch.zeros((1, self.crop_to[0], self.crop_to[1]))
+        mask_past = torch.zeros((1, self.crop_to[0], self.crop_to[1]))
+        mask_cur[:, fg_x:fg_x + fg_w, fg_y:fg_y + fg_h] = torch.ones((fg_w, fg_h))
+        mask_fut[:, fg_x + flf_x:fg_x + fg_w + flf_x, fg_y + flf_y:fg_y + fg_h + flf_y] = torch.ones((fg_w, fg_h))
+        mask_past[:, fg_x - flf_x:fg_x + fg_w - flf_x, fg_y - flf_y:fg_y + fg_h - flf_y] = torch.ones((fg_w, fg_h))
+        occ_mask = (mask_fut * (1 - mask_cur)).permute(0, 2, 1)
+        occ_mask_past = (mask_past * (1 - mask_cur)).permute(0, 2, 1)
+
         """
         # Aliasing
         middle = [float(x) for x in self.cfg.alias.middle.split(",")]
@@ -116,4 +125,4 @@ class RoamingImagesDataset():
         """
 
         image = [image1, image2, image3]
-        return Batch(image, image, image, image, image, [flow], [flow], "blah.png", masks={})
+        return Batch(image, image, image, image, image, [flow], [flow], "blah.png", masks={"occ": occ_mask, "occ_past": occ_mask_past})

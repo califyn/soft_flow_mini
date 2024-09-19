@@ -108,23 +108,31 @@ class CroCoDPTWrapper(torch.nn.Module):
         print(f'Building head PixelwiseTaskWithDPT() with {feat_dim} channel(s)')
         self.head = PixelwiseTaskWithDPT()
         self.head.num_channels = feat_dim
-        # build model and load pretrained weights
         model = CroCoDownstreamBinocular(self.head, **croco_args)
-        #head = PixelwiseTaskWithDPT()
-        #head.num_channels = feat_dim
-        #model = CroCoDownstreamBinocular(head, **croco_args)
         interpolate_pos_embed(model, ckpt['model'])
         msg = model.load_state_dict(ckpt['model'], strict=False)
         print(msg)
     
         self.model = model
         self.feat_dim = feat_dim
+        """self.head2 = PixelwiseTaskWithDPT()
+        self.head2.num_channels = 1
+        model2 = CroCoDownstreamBinocular(self.head2, **croco_args)
+        interpolate_pos_embed(model2, ckpt['model'])
+        msg = model2.load_state_dict(ckpt['model'], strict=False)
+        print(msg)
+    
+        self.model2 = model2"""
 
     def forward(self, img1, img2=None):
         self.model.patch_embed.img_size = img1.shape[-2:]
+        #self.model2.patch_embed.img_size = img1.shape[-2:]
         #out, _, _ = self.model(img1, img2)
         #out, _, _ = self.model(img1, img1)
         #return self.model.unpatchify(out, channels=self.feat_dim, h=img1.shape[-2]//16, w=img1.shape[-1]//16)
+        #ret = self.model(img1, img2)
+        #ret2 = self.model2(img1, img2)
+        #return torch.cat((ret[:, :-1] , ret2[:, -1, None]), dim=1)
         return self.model(img1, img2)
 
 
@@ -170,13 +178,14 @@ class SoftMultiFramePredictor(torch.nn.Module):
         self.max_size = torch.max(torch.abs(self.grid)) / self.downsample_factor
 
         self.method = cfg.cost.method
+        self.nn_pred_occ_mask = cfg.cost.pred_occ_mask == "nn"
         if self.method == 'weights':
             self.weights = torch.nn.Parameter(torch.zeros(1, self.n_frames-1, self.height, self.width, self.true_sl, self.true_sl)) 
         elif self.method == 'feats':
             fill_val = (1/feat_dim) ** 0.5
             self.feats = torch.nn.Parameter(torch.full((1, self.n_frames, feat_dim, self.height, self.width), fill_val))
         elif self.method == 'nn':
-            if self.cfg.cost.pred_occ_mask:
+            if self.nn_pred_occ_mask:
                 feat_dim = feat_dim + 1
             if cfg.cost.model == "croco":
                 self.nn = CroCoWrapper(feat_dim)
@@ -187,7 +196,6 @@ class SoftMultiFramePredictor(torch.nn.Module):
                 else:
                     self.nn = CroCoDPTWrapper(feat_dim, (self.height, self.width))
 
-        self.nn_pred_occ_mask = cfg.cost.pred_occ_mask
 
     def _get_nd_butterworth_filter(
         self, shape, factor, dtype=torch.float64, squared_butterworth=True
@@ -294,7 +302,9 @@ class SoftMultiFramePredictor(torch.nn.Module):
                             tgt_in_ = torch.nn.functional.pad(tgt_in_, (t_patch, t_patch, t_patch, t_patch), mode="constant")
                         src_in_, tgt_in_ = self.nn(src_in_, img2=tgt_in_), self.nn(tgt_in_, img2=src_in_)
                         if self.nn_pred_occ_mask:
-                            pred_occ_mask = torch.reshape(src_in_[:, -1], (in_frames.shape[0], len(src_idx), 1, src_in_.shape[2:]))
+                            pred_occ_mask = torch.reshape(tgt_in_[0, -1], (in_frames.shape[0], 1, 1, *tgt_in_.shape[2:]))
+                            if self.border_handling == "pad_feats":
+                                pred_occ_mask = pred_occ_mask[..., t_patch:-t_patch, t_patch:-t_patch]
                             src_in_ = src_in_[:, :-1]
                             tgt_in_ = tgt_in_[:, :-1]
                         if self.border_handling == "pad_feats":
@@ -345,6 +355,8 @@ class SoftMultiFramePredictor(torch.nn.Module):
         expected_norm = torch.einsum('bnijkl,kl->bnij', weights, grid.norm(dim=-1)) / self.downsample_factor  # Shape: [height, width, 2]
         expected_positions = expected_positions.flip(-1)
 
+        if pred_occ_mask is None and "occ_past" in batch.masks.keys():
+            pred_occ_mask = batch.masks["occ"] - batch.masks["occ_past"]
         return {
                     'out':out, 
                     'positions': expected_positions, 
@@ -444,32 +456,34 @@ class OverfitSoftLearner(L.LightningModule):
             #loss = criterion(outputs["out"]*border_weights, outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
             if self.three_frames:
                 #loss = 0.5 * (criterion_min(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness) + criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness))
-                if self.cfg.cost.pred_occ_mask:
-                    occ_weights = torch.sigmoid(outputs["pred_occ_mask"])
+                if False: #self.cfg.cost.pred_occ_mask in ["nn", "gt"]:
+                    if self.cfg.cost.pred_occ_mask == "nn":
+                        occ_weights = torch.sigmoid(outputs["pred_occ_mask"])
+                    elif self.cfg.cost.pred_occ_mask == "gt":
+                        occ_weights = outputs["pred_occ_mask"][:, :, None] * 0.5 + 0.5
                     occ_weights = torch.cat((occ_weights, 1-occ_weights), dim=1)
-                    print(occ_weights.shape, outputs["out"].shape)
-                    input("?")
                     loss = criterion(outputs["out"]*occ_weights, outputs["tgt"]*border_weights*occ_weights, self.cfg.model.charbonnier_flatness)
-                    loss += (0.25 - occ_weights[:, 0] * occ_weights[:, 1]) * 0.1
+                    loss += (0.25 - occ_weights[:, 0] * occ_weights[:, 1]).mean() * 0.1
                 else:
                     loss = criterion_min(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
             else:
                 loss = criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
 
-        if self.three_frames:
-            temp_smooth_reg = temporal_smoothness_loss(outputs['positions'])
-            #temp_smooth_reg = full_temporal_smoothness_loss(outputs['weights'])
-            loss += self.cfg.model.temp_smoothness * temp_smooth_reg
+        if self.global_step > 0:
+            if self.three_frames:
+                temp_smooth_reg = temporal_smoothness_loss(outputs['positions'])
+                #temp_smooth_reg = full_temporal_smoothness_loss(outputs['weights'])
+                loss += self.cfg.model.temp_smoothness * temp_smooth_reg
 
-        if occ_mask is not None:
-            occ_mask = occ_mask.float()
-        #spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=outputs['tgt'], occ_mask=occ_mask)
-        spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=outputs['tgt'], edge_weight=self.cfg.model.smoothness_edge, occ_mask=None)
-        #spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=None, occ_mask=None)
-        loss += spat_smooth_reg * self.cfg.model.smoothness * (self.model.true_sl ** 2) # finally weighing this #2.8e4 #* (61/31) * (61/31) # for sintel
+            if occ_mask is not None:
+                occ_mask = occ_mask.float()
+            #spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=outputs['tgt'], occ_mask=occ_mask)
+            spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=outputs['tgt'], edge_weight=self.cfg.model.smoothness_edge, occ_mask=None)
+            #spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], image=None, occ_mask=None)
+            loss += spat_smooth_reg * self.cfg.model.smoothness * (self.model.true_sl ** 2) # finally weighing this #2.8e4 #* (61/31) * (61/31) # for sintel
 
-        spat_smooth_reg = position_spat_smoothness(outputs['positions'])
-        loss += spat_smooth_reg * self.cfg.model.pos_smoothness #2e-3
+            spat_smooth_reg = position_spat_smoothness(outputs['positions'])
+            loss += spat_smooth_reg * self.cfg.model.pos_smoothness #2e-3
 
         norm_reg = outputs['exp_norm'].mean()
         loss += norm_reg * self.cfg.model.norm
@@ -856,7 +870,8 @@ class OverfitSoftLearner(L.LightningModule):
             gt_fwd_raft_full = torch.cat((torchvision.transforms.functional.resize(gt_flows, (raft_pred_full.shape[2], raft_pred_full.shape[3])), raft_pred_full), dim=3)
             gt_fwd_smurf = torch.cat((torchvision.transforms.functional.resize(gt_flows, (smurf_pred.shape[2], smurf_pred.shape[3])), smurf_pred), dim=3)
             gt_fwd_smurf_full = torch.cat((torchvision.transforms.functional.resize(gt_flows, (smurf_pred_full.shape[2], smurf_pred_full.shape[3])), smurf_pred_full), dim=3)
-            occ_mask_vis = torch.cat((torchvision.transforms.functional.resize(gt_flows, (occ_mask.shape[2], occ_mask.shape[3])), occ_mask.repeat(1, 3, 1, 1).float(), match_mask.repeat(1, 3, 1, 1).float(), conv_match_occ.repeat(1, 3, 1, 1).float()), dim=3)
+            #occ_mask_vis = torch.cat((torchvision.transforms.functional.resize(gt_flows, (occ_mask.shape[2], occ_mask.shape[3])), occ_mask.repeat(1, 3, 1, 1).float(), match_mask.repeat(1, 3, 1, 1).float(), conv_match_occ.repeat(1, 3, 1, 1).float()), dim=3)
+            occ_mask_vis = torch.sigmoid(outputs["pred_occ_mask"][:, -1].repeat(1, 3, 1, 1))
 
             # Soft flow maps f1, f3 to f2
             if self.logger is not None:

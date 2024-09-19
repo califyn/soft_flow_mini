@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import argparse
+import time
 
 import torch
 from data.sintel_superres import SintelSuperResDataset
@@ -167,6 +168,10 @@ if __name__ == "__main__":
     cfg.wandb.name = args.name
     cfg.wandb.mode = args.mode
     cfg.wandb.id = args.id
+    if args.id is None:
+        cfg.wandb.id = str(time.time_ns())[-16:]
+    else:
+        cfg.wandb.id = args.id
     cfg.wandb.resume = args.resume
     if cfg.wandb.resume == "allow":
         cfg.wandb.resume = cfg.wandb.id # resumes the run if it already exists
