@@ -179,6 +179,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
 
         self.method = cfg.cost.method
         self.nn_pred_occ_mask = cfg.cost.pred_occ_mask == "nn"
+        self.fb_pred_occ_mask = cfg.cost.pred_occ_mask == "fb"
         if self.method == 'weights':
             self.weights = torch.nn.Parameter(torch.zeros(1, self.n_frames-1, self.height, self.width, self.true_sl, self.true_sl)) 
         elif self.method == 'feats':
@@ -344,6 +345,10 @@ class SoftMultiFramePredictor(torch.nn.Module):
             temp = 1.
         weights = F.softmax(weights, dim=-1).view(weights_shape)
 
+        if self.fb_pred_occ_mask:
+            fb_weights = torch.sum(transpose_filter(weights.detach()), dim=(-2, -1))[:, :, None]
+            pred_occ_mask = torch.flip(fb_weights, [1])
+
         weights = weights.to(in_frames.device)
         grid = self.grid.to(in_frames.device)
 
@@ -356,7 +361,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
         expected_positions = expected_positions.flip(-1)
 
         if pred_occ_mask is None and "occ_past" in batch.masks.keys():
-            pred_occ_mask = batch.masks["occ"] - batch.masks["occ_past"]
+            pred_occ_mask = batch.masks["occ_past"] - batch.masks["occ"]
         return {
                     'out':out, 
                     'positions': expected_positions, 
@@ -456,7 +461,8 @@ class OverfitSoftLearner(L.LightningModule):
             #loss = criterion(outputs["out"]*border_weights, outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
             if self.three_frames:
                 #loss = 0.5 * (criterion_min(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness) + criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness))
-                if False: #self.cfg.cost.pred_occ_mask in ["nn", "gt"]:
+                #if False: #self.cfg.cost.pred_occ_mask in ["nn", "gt"]:
+                if self.cfg.cost.pred_occ_mask in ["nn", "gt"]:
                     if self.cfg.cost.pred_occ_mask == "nn":
                         occ_weights = torch.sigmoid(outputs["pred_occ_mask"])
                     elif self.cfg.cost.pred_occ_mask == "gt":
@@ -466,12 +472,17 @@ class OverfitSoftLearner(L.LightningModule):
                     loss += (0.25 - occ_weights[:, 0] * occ_weights[:, 1]).mean() * 0.1
                 else:
                     loss = criterion_min(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
+                    print("USING MIN LOSS")
             else:
-                loss = criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
+                if self.cfg.cost.pred_occ_mask != "fb":
+                    loss = criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
+                else:
+                    occ_weights = torch.gt(outputs["pred_occ_mask"], torch.Tensor([0.5]).to(outputs["pred_occ_mask"].device))
+                    loss = criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
 
         if self.global_step > 0:
             if self.three_frames:
-                temp_smooth_reg = temporal_smoothness_loss(outputs['positions'])
+                temp_smooth_reg = temporal_smoothness_loss(outputs['positions'], r=None)#r=0.5)
                 #temp_smooth_reg = full_temporal_smoothness_loss(outputs['weights'])
                 loss += self.cfg.model.temp_smoothness * temp_smooth_reg
 
@@ -871,7 +882,10 @@ class OverfitSoftLearner(L.LightningModule):
             gt_fwd_smurf = torch.cat((torchvision.transforms.functional.resize(gt_flows, (smurf_pred.shape[2], smurf_pred.shape[3])), smurf_pred), dim=3)
             gt_fwd_smurf_full = torch.cat((torchvision.transforms.functional.resize(gt_flows, (smurf_pred_full.shape[2], smurf_pred_full.shape[3])), smurf_pred_full), dim=3)
             #occ_mask_vis = torch.cat((torchvision.transforms.functional.resize(gt_flows, (occ_mask.shape[2], occ_mask.shape[3])), occ_mask.repeat(1, 3, 1, 1).float(), match_mask.repeat(1, 3, 1, 1).float(), conv_match_occ.repeat(1, 3, 1, 1).float()), dim=3)
-            occ_mask_vis = torch.sigmoid(outputs["pred_occ_mask"][:, -1].repeat(1, 3, 1, 1))
+            if outputs["pred_occ_mask"] is not None:
+                occ_mask_vis = outputs["pred_occ_mask"][:, 0].repeat(1, 3, 1, 1)
+            else:
+                occ_mask_vis = torch.zeros_like(gt_flow[:, 0, None]).repeat(1, 3, 1, 1)
 
             # Soft flow maps f1, f3 to f2
             if self.logger is not None:

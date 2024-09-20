@@ -41,8 +41,8 @@ if __name__ == "__main__":
 
     parser.add_argument('-t','--type_gpus', default="a100")
     parser.add_argument('-g','--num_gpus', default="1")
-    parser.add_argument('-r','--hours', default="96")
-    parser.add_argument('-e','--memory', default="16G")
+    parser.add_argument('-r','--hours', default="72")
+    parser.add_argument('-e','--memory', default="32G")
 
     parser.add_argument('-d','--id', default=None)
     parser.add_argument('-s','--resume', default="allow")

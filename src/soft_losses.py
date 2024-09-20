@@ -7,13 +7,17 @@ def entropy_loss(weight_softmax):
     entropy = -torch.mean(weight_softmax * torch.log(weight_softmax + 1e-8))
     return entropy
 
-def temporal_smoothness_loss(flow_fields):
+def temporal_smoothness_loss(flow_fields, r=None):
     #expected_flow_t = warp_previous_flow(flow_fields)
     # expected_flow_t = warp_previous_flow_multi(flow_fields)
 
     #flow_t_plus_1 = flow_fields[:, 1:].reshape(-1, *flow_fields.shape[2:])
     #flow_diffs = flow_t_plus_1 - expected_flow_t
     #loss = (flow_diffs ** 2).mean()
+    loss = torch.abs(flow_fields[:, 0] + flow_fields[:, 1])
+    if r is None:
+        weights = torch.abs(flow_fields[:, 0] - flow_fields[:, 1]) * 0.5
+        loss = torch.max(loss, weights * r) - weights * r
     return torch.abs(flow_fields[:, 0] + flow_fields[:, 1]).mean()
 
 def full_temporal_smoothness_loss(weights):
