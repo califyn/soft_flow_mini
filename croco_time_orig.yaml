@@ -30,7 +30,7 @@ model:
 cost:
     method: nn
     model: croco_dpt
-    pred_occ_mask: null 
+    pred_occ_mask: 3fb #null 
 dataset:
     dataset: sintel
     train_split: training 

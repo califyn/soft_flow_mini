@@ -180,6 +180,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
         self.method = cfg.cost.method
         self.nn_pred_occ_mask = cfg.cost.pred_occ_mask == "nn"
         self.fb_pred_occ_mask = cfg.cost.pred_occ_mask == "fb"
+        self.fb3_pred_occ_mask = cfg.cost.pred_occ_mask == "3fb"
         if self.method == 'weights':
             self.weights = torch.nn.Parameter(torch.zeros(1, self.n_frames-1, self.height, self.width, self.true_sl, self.true_sl)) 
         elif self.method == 'feats':
@@ -348,6 +349,9 @@ class SoftMultiFramePredictor(torch.nn.Module):
         if self.fb_pred_occ_mask:
             fb_weights = torch.sum(transpose_filter(weights.detach()), dim=(-2, -1))[:, :, None]
             pred_occ_mask = torch.flip(fb_weights, [1])
+        elif self.fb3_pred_occ_mask:
+            fb_weights = torch.sum(transpose_filter(weights.detach()), dim=(-2, -1))[:, :, None]
+            pred_occ_mask = torch.gt(fb_weights, torch.Tensor([0.8]).to(fb_weights.device)
 
         weights = weights.to(in_frames.device)
         grid = self.grid.to(in_frames.device)
@@ -465,12 +469,15 @@ class OverfitSoftLearner(L.LightningModule):
             if self.three_frames:
                 #loss = 0.5 * (criterion_min(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness) + criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness))
                 #if False: #self.cfg.cost.pred_occ_mask in ["nn", "gt"]:
-                if self.cfg.cost.pred_occ_mask in ["nn", "gt"]:
+                if self.cfg.cost.pred_occ_mask in ["nn", "gt", "3fb"]:
                     if self.cfg.cost.pred_occ_mask == "nn":
                         occ_weights = torch.sigmoid(outputs["pred_occ_mask"])
+                        occ_weights = torch.cat((occ_weights, 1-occ_weights), dim=1)
                     elif self.cfg.cost.pred_occ_mask == "gt":
                         occ_weights = outputs["pred_occ_mask"][:, :, None] * 0.5 + 0.5
-                    occ_weights = torch.cat((occ_weights, 1-occ_weights), dim=1)
+                        occ_weights = torch.cat((occ_weights, 1-occ_weights), dim=1)
+                    elif self.cfg.cost.pred_occ_mask == "3fb":
+                        occ_weights = outputs["pred_occ_mask"]
                     loss = criterion(outputs["out"]*occ_weights, outputs["tgt"]*border_weights*occ_weights, self.cfg.model.charbonnier_flatness)
                     loss += (0.25 - occ_weights[:, 0] * occ_weights[:, 1]).mean() * 0.1
                 else:
@@ -580,10 +587,19 @@ class OverfitSoftLearner(L.LightningModule):
                                  tgt_idx=[1+self.select_in])
             self.select_in = (self.select_in + 1) % 2
         elif self.three_frames:
+            if self.cfg.cost.pred_occ_mask == "3fb":
+                outputs = self.model(batch,
+                                     temp=self.temp, 
+                                     src_idx=[1,1],
+                                     tgt_idx=[0,2])
+                occ_mask = outputs["pred_occ_mask"]
+                del outputs
             outputs = self.model(batch,
                                  temp=self.temp, 
                                  src_idx=[2,0],
                                  tgt_idx=[1,1])
+            if self.cfg.cost.pred_occ_mask == "3fb":
+                outputs["pred_occ_mask"] = occ_mask
         else:
             outputs = self.model(batch,
                                  src_idx=[2],
