@@ -416,7 +416,10 @@ class OverfitSoftLearner(L.LightningModule):
 
         #warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda=lambda x: min(x/5000, 1.))
         #warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda=lambda x: 1.)
-        warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda=lambda x: self.cfg.training.high_lr/self.cfg.training.lr if x <= self.cfg.training.high_lr_steps else 1)
+        if self.cfg.training.lr > 0:
+            warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda=lambda x: self.cfg.training.high_lr/self.cfg.training.lr if x <= self.cfg.training.high_lr_steps else 1)
+        else:
+            warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda=lambda x: self.cfg.training.high_lr if x <= self.cfg.training.high_lr_steps else 1)
         #return model_opt, temp_opt
         return (
             {

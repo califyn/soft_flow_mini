@@ -15,7 +15,7 @@ def temporal_smoothness_loss(flow_fields, r=None):
     #flow_diffs = flow_t_plus_1 - expected_flow_t
     #loss = (flow_diffs ** 2).mean()
     loss = torch.abs(flow_fields[:, 0] + flow_fields[:, 1])
-    if r is None:
+    if r is not None:
         weights = torch.abs(flow_fields[:, 0] - flow_fields[:, 1]) * 0.5
         loss = torch.max(loss, weights * r) - weights * r
     return torch.abs(flow_fields[:, 0] + flow_fields[:, 1]).mean()
