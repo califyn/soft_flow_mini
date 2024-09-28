@@ -15,6 +15,7 @@ model:
     smoothness_edge: 150.0
     pos_smoothness: 0.0
     temp_smoothness: 1e-1
+    temp_on_occ: true
     frameskip: 1
     norm: 0.0
     entropy: 0.0 #1e2
@@ -31,7 +32,7 @@ model:
 cost:
     method: nn
     model: croco_dpt
-    pred_occ_mask: null
+    pred_occ_mask: 3fb
 dataset:
     dataset: sintel
     train_split: training 

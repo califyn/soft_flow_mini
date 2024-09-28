@@ -109,7 +109,7 @@ def accumulate_metrics(dataset, model_fwd, cfg=None):
     dataloader = torch.utils.data.DataLoader(
                 dataset,
                 batch_size=bsz,
-                num_workers=31,
+                num_workers=7,
                 shuffle=False,
                 collate_fn=Batch.collate_fn
             )
@@ -221,7 +221,27 @@ def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None, warped_fw
             else:
                 out['diff_flow2'].append(flow_to_image(torch.nan_to_num(pred_flow[1] - batch.flow_orig[0].to(pred_flow[1].device))))
         if 'diff_between' in display_keys:
-            out['diff_between'].append(flow_to_image(pred_flow[0] - pred_flow[1]))
+            #out['diff_between'].append(flow_to_image(pred_flow[0] - pred_flow[1]))
+            error_1 = torch.linalg.norm(pred_flow[0] - batch.flow_orig[0], dim=1, keepdim=True)
+            error_2 = torch.linalg.norm(pred_flow[1] - batch.flow_orig[0], dim=1, keepdim=True)
+            error_2 = torch.clamp(error_2, min=1e-10)
+
+            #ratio = error_1 / error_2
+            NUM_MAX = 10.0
+            ratio = error_2 - error_1
+            #ratio = torch.clamp(ratio, 1/NUM_MAX, NUM_MAX)
+            ratio = torch.clamp(ratio, -NUM_MAX, NUM_MAX)
+
+            green_mask = (ratio > 0.0).float()
+            green_vals = ratio/NUM_MAX #(ratio - 1.0)/(NUM_MAX - 1.0)
+            red_mask = (ratio < 0.0).float()
+            red_vals = -ratio/NUM_MAX #(1/ratio - 1.0)/(NUM_MAX - 1.0)
+
+            ret = torch.ones((error_1.shape[0], 3, error_1.shape[2], error_1.shape[3])).to(error_1.device)
+            ret[:, 0] = ret[:, 0] - green_vals * green_mask
+            ret[:, 1] = ret[:, 1] - red_vals * red_mask
+            ret[:, 2] = ret[:, 2] - green_vals * green_mask - red_vals * red_mask
+            out['diff_between'].append(ret)
         if 'occ' in display_keys:
             out['occ'].append(batch.masks['occ'].repeat(1, 3, 1, 1))
         if 'fl_pos' in display_keys:
@@ -264,14 +284,17 @@ def evaluate(dataset, model_fwd, cfg=None, warped_fwd=None): # eventually suppor
 def evaluate_against(dataset, model_fwd_1, model_fwd_2, cfg=None): # eventually support model fwd
     metrics_1 = accumulate_metrics(dataset, model_fwd_1, cfg=cfg)
     metrics_2 = accumulate_metrics(dataset, model_fwd_2, cfg=cfg)
-    random_idx = list(range(0, len(dataset), len(dataset)//16))
-    input(random_idx)
+    if len(dataset) < 16:
+        random_idx = list(range(0, len(dataset)))
+    else:
+        random_idx = list(range(0, len(dataset), len(dataset)//16))
     image_random = visualize(dataset, [model_fwd_1, model_fwd_2], sample_idxs=random_idx)
 
-    worst = torch.topk(metrics_1['primary'], 8, sorted=True).indices
-    best = torch.topk(metrics_1['primary'], 8, largest=False, sorted=True).indices
-    worst_comp = torch.topk(metrics_1['primary'] - metrics_2['primary'], 8, sorted=True).indices
-    best_comp = torch.topk(metrics_1['primary'] - metrics_2['primary'], 8, largest=False, sorted=True).indices
+    num_comp = min(8, len(dataset))
+    worst = torch.topk(metrics_1['primary'], num_comp, sorted=True).indices
+    best = torch.topk(metrics_1['primary'], num_comp, largest=False, sorted=True).indices
+    worst_comp = torch.topk(metrics_1['primary'] - metrics_2['primary'], num_comp, sorted=True).indices
+    best_comp = torch.topk(metrics_1['primary'] - metrics_2['primary'], num_comp, largest=False, sorted=True).indices
     image_worst = visualize(dataset, [model_fwd_1, model_fwd_2], sample_idxs=worst)
     image_best = visualize(dataset, [model_fwd_1, model_fwd_2], sample_idxs=best)
     image_worst_comp = visualize(dataset, [model_fwd_1, model_fwd_2], sample_idxs=worst)

@@ -13,7 +13,8 @@ model:
     smoothness: 2.5e-1
     smoothness_edge: 150.0
     pos_smoothness: 0.0 #3e-2
-    temp_smoothness: 1e-2
+    temp_smoothness: 3e-1
+    temp_on_occ: true
     frameskip: 1
     norm: 0.0
     entropy: 0.0 #1e2
@@ -30,10 +31,11 @@ model:
 cost:
     method: nn
     model: croco_dpt
-    pred_occ_mask: 3fb #null 
+    pred_occ_mask: 3fb
 dataset:
     dataset: sintel
     train_split: training 
+    val_split: validation
     idx: 0 
     imsz: 1 
     imsz_super: 1
@@ -58,8 +60,8 @@ training:
 validation:
     check_epoch: 25
     limit_batch: 64
-    check_interval: 250 
-    full_val_every: null #50000 
+    check_interval: 1.0 #250
+    full_val_every: 12500 #25000 
     data:
         batch_size: 1
         shuffle: false

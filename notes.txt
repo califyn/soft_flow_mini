@@ -1,0 +1,8 @@
+6347297200188452 -- sintel smooth 150.0 base run
+6265412932207392 no pos smooth no edge smooth
+with pos: fr08659r
+
+squeue --nodelist=sitzmann-a100-1 --format="%.18i %.9P %.8j %.8u %.2t %.10M %.6D %.14R %.17b"
+
+fromckpt .325: 4tl1xk27
+current lowest .276 with occ: 7218974858176726

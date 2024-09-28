@@ -29,33 +29,33 @@ def run(cfg: DictConfig):
     # Set up dataset and dataloader
     if cfg.dataset.dataset == "sintel":
         train_dataset = SintelSuperResDataset(cfg, cfg.dataset.train_split)
-        val_dataset = SintelSuperResDataset(cfg, "validation")
+        val_dataset = SintelSuperResDataset(cfg, cfg.dataset.val_split, is_val=True)
     elif cfg.dataset.dataset == "llff":
         train_dataset = LLFFSuperResDataset(cfg, cfg.dataset.train_split)
-        val_dataset = LLFFSuperResDataset(cfg, "validation")
+        val_dataset = LLFFSuperResDataset(cfg, cfg.dataset.val_split, is_val=True)
     elif cfg.dataset.dataset == "pokemon":
         train_dataset = PokemonSuperResDataset(cfg, cfg.dataset.train_split)
-        val_dataset = PokemonSuperResDataset(cfg, "validation")
+        val_dataset = PokemonSuperResDataset(cfg, cfg.dataset.val_split, is_val=True)
     elif cfg.dataset.dataset == "spring":
         train_dataset = SpringSuperResDataset(cfg, cfg.dataset.train_split)
-        val_dataset = SpringSuperResDataset(cfg, "validation")
+        val_dataset = SpringSuperResDataset(cfg, cfg.dataset.val_split, is_val=True)
     elif cfg.dataset.dataset == "kitti":
         train_dataset = KITTISuperResDataset(cfg, cfg.dataset.train_split)
-        val_dataset = KITTISuperResDataset(cfg, "validation")
+        val_dataset = KITTISuperResDataset(cfg, cfg.dataset.val_split, is_val=True)
     elif cfg.dataset.dataset == "roaming_images":
         train_dataset = RoamingImagesDataset(cfg, cfg.dataset.train_split)
-        val_dataset = RoamingImagesDataset(cfg, "validation")
+        val_dataset = RoamingImagesDataset(cfg, cfg.dataset.val_split)
     train_dataloader = torch.utils.data.DataLoader(
                 train_dataset,
                 batch_size=cfg.training.data.batch_size,
-                num_workers=31,
+                num_workers=7,
                 shuffle=False,
                 collate_fn=Batch.collate_fn
             )
     val_dataloader = torch.utils.data.DataLoader(
                 val_dataset,
                 batch_size=cfg.validation.data.batch_size,
-                num_workers=5,
+                num_workers=7,
                 shuffle=False,
                 collate_fn=Batch.collate_fn
             )

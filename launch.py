@@ -18,7 +18,7 @@ job = """#!/bin/bash
 #SBATCH --mem={memory}
 #SBATCH --partition=vision-sitzmann
 #SBATCH --qos=vision-sitzmann-main
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=8
 #SBATCH --requeue
 
 rm /data/scratch/califyn/flow_mini/slurm_logs/latest.out

@@ -13,8 +13,7 @@ model:
     smoothness: 2.5e-1
     smoothness_edge: 150.0
     pos_smoothness: 0.0 #3e-2
-    temp_smoothness: 1e-1
-    temp_on_occ: true
+    temp_smoothness: 0.0
     frameskip: 1
     norm: 0.0
     entropy: 0.0 #1e2
@@ -31,7 +30,7 @@ model:
 cost:
     method: nn
     model: croco_dpt
-    pred_occ_mask: 3fb #null 
+    pred_occ_mask: true
 dataset:
     dataset: roaming_images
     train_split: training 
@@ -57,9 +56,9 @@ training:
     weight_decay: 0.
     ckpt_every: 12500
 validation:
-    check_epoch: 1 
-    limit_batch: 4
-    check_interval: 50
+    check_epoch: 5
+    limit_batch: 64
+    check_interval: 250 
     full_val_every: null #50000 
     data:
         batch_size: 1

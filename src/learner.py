@@ -3,6 +3,7 @@ from omegaconf import DictConfig
 import math
 import functools
 from copy import deepcopy
+import time
 
 import torch
 import torchvision
@@ -148,7 +149,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
         self.weight_sl = weight_sl
         self.downsample_factor = downsample_factor
         if cfg.model.border_handling_on >= 0:
-            self.border_handling = None #cfg.model.border_handling
+            self.border_handling = None # cfg.model.border_handling
         else:
             self.border_handling = cfg.model.border_handling
         self.filter_zoom = filter_zoom
@@ -266,13 +267,14 @@ class SoftMultiFramePredictor(torch.nn.Module):
     def forward(self, batch, weights=None, temp=None, src_idx=0, tgt_idx=1):
         in_frames = torch.stack(batch.frames_up, dim=1)
         in_down = torch.stack(batch.frames, dim=1)
-        assert(in_frames.shape[0] == 1)
+        #assert(in_frames.shape[0] == 1)
 
         src_in_up = torch.stack([in_frames[:, s] for s in src_idx], dim=1)
         src_in = torch.stack([in_down[:, s] for s in src_idx], dim=1)
         tgt_in = torch.stack([in_down[:, t] for t in tgt_idx], dim=1)
 
         pred_occ_mask = None
+        #pred_occ_mask_high = None
         if weights is not None:
             weights = weights.flatten(start_dim=-2)
         else:
@@ -350,8 +352,11 @@ class SoftMultiFramePredictor(torch.nn.Module):
             fb_weights = torch.sum(transpose_filter(weights.detach()), dim=(-2, -1))[:, :, None]
             pred_occ_mask = torch.flip(fb_weights, [1])
         elif self.fb3_pred_occ_mask:
-            fb_weights = torch.sum(transpose_filter(weights.detach()), dim=(-2, -1))[:, :, None]
-            pred_occ_mask = torch.gt(fb_weights, torch.Tensor([0.8]).to(fb_weights.device)
+            assert(self.downsample_factor == 1)
+            fb_weights = torch.nn.Fold((weights.shape[2]+(self.weight_sl//2)*2, weights.shape[3]+(self.weight_sl//2)*2), self.true_sl)(weights.detach().permute(0, 1, 4, 5, 2, 3).reshape(weights.shape[0], weights.shape[1]*weights.shape[4]*weights.shape[5], weights.shape[2]*weights.shape[3]))
+            t = self.weight_sl//2
+            fb_weights = fb_weights[..., t:-t, t:-t][:, :, None]
+            pred_occ_mask = torch.gt(fb_weights, torch.Tensor([0.5]).to(fb_weights.device)).float()
 
         weights = weights.to(in_frames.device)
         grid = self.grid.to(in_frames.device)
@@ -364,8 +369,15 @@ class SoftMultiFramePredictor(torch.nn.Module):
         expected_norm = torch.einsum('bnijkl,kl->bnij', weights, grid.norm(dim=-1)) / self.downsample_factor  # Shape: [height, width, 2]
         expected_positions = expected_positions.flip(-1)
 
-        if pred_occ_mask is None and "occ_past" in batch.masks.keys():
-            pred_occ_mask = batch.masks["occ_past"] - batch.masks["occ"]
+        """
+        if pred_occ_mask is None:# and "occ_past" in batch.masks.keys():
+            #pred_occ_mask = batch.masks["occ_past"] - batch.masks["occ"]
+            #pred_occ_mask = 1. - torch.cat((batch.masks["occ_past"], batch.masks["occ"]), dim=1)[:, :, None]
+            if out.shape[1] == 2:
+                pred_occ_mask = 1. - torch.cat((batch.masks["occ"], batch.masks["occ_past"]), dim=1)[:, :, None]
+            else:
+                pred_occ_mask = 1. - batch.crop_masks["occ"][:, :, None]
+        """
         return {
                     'out':out, 
                     'positions': expected_positions, 
@@ -375,6 +387,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
                     'src_up': src_in_up,
                     'tgt': tgt_in,
                     'pred_occ_mask': pred_occ_mask,
+                    #'pred_occ_mask_high': pred_occ_mask_high,
                 }
 
     def set(self, idx, set_to):
@@ -402,12 +415,17 @@ class OverfitSoftLearner(L.LightningModule):
 
         self.old_epe_full = None
         self.automatic_optimization = False
-        self.last_full_val = 0
+        self.last_full_val = self.global_step
         self.val_dataset = deepcopy(val_dataset)
+        if cfg.training.overfit_batch == 1:
+            self.val_dataset.frame_paths = [self.val_dataset.frame_paths[cfg.dataset.idx]]
+            self.val_dataset.flow_paths = [self.val_dataset.flow_paths[cfg.dataset.idx]]
+            self.val_dataset.mask_paths = [self.val_dataset.mask_paths[cfg.dataset.idx]]
+            self.val_dataset.idx = 0
         self.select_in = 0
 
     def configure_optimizers(self):
-        #model_opt = torch.optim.Adam(self.trainer.model.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
+        #model_opt = torch.optim.Adam(self.trainer.model.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.
         #model_opt = torch.optim.Adam(self.model.nn.head.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
         #model_opt = torch.optim.AdamW(self.trainer.model.parameters(), lr=self.cfg.training.lr, betas=(0.9, 0.95))
         #param_groups = get_parameter_groups(self.trainer.model, weight_decay=0.05)
@@ -474,25 +492,48 @@ class OverfitSoftLearner(L.LightningModule):
                         occ_weights = torch.sigmoid(outputs["pred_occ_mask"])
                         occ_weights = torch.cat((occ_weights, 1-occ_weights), dim=1)
                     elif self.cfg.cost.pred_occ_mask == "gt":
-                        occ_weights = outputs["pred_occ_mask"][:, :, None] * 0.5 + 0.5
-                        occ_weights = torch.cat((occ_weights, 1-occ_weights), dim=1)
-                    elif self.cfg.cost.pred_occ_mask == "3fb":
+                        #occ_weights = outputs["pred_occ_mask"][:, :, None] * 0.5 + 0.5
+                        #occ_weights = torch.cat((occ_weights, 1-occ_weights), dim=1)
                         occ_weights = outputs["pred_occ_mask"]
-                    loss = criterion(outputs["out"]*occ_weights, outputs["tgt"]*border_weights*occ_weights, self.cfg.model.charbonnier_flatness)
-                    loss += (0.25 - occ_weights[:, 0] * occ_weights[:, 1]).mean() * 0.1
+                    elif self.cfg.cost.pred_occ_mask == "3fb":
+                        #occ_weights = outputs["pred_occ_mask_high"]
+                        occ_weights = outputs["pred_occ_mask"]
+                    #loss = criterion(outputs["out"]*occ_weights, outputs["tgt"]*border_weights*occ_weights, self.cfg.model.charbonnier_flatness)
+                    loss = criterion(outputs["out"]*occ_weights, outputs["tgt"]*occ_weights, self.cfg.model.charbonnier_flatness)
+                    if self.cfg.cost.pred_occ_mask == "nn":
+                        loss += (0.25 - occ_weights[:, 0] * occ_weights[:, 1]).mean() * 0.1
                 else:
-                    loss = criterion_min(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
-                    print("USING MIN LOSS")
+                    #loss = criterion_min(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
+                    loss = criterion(outputs["out"], outputs["tgt"], self.cfg.model.charbonnier_flatness)
             else:
-                if self.cfg.cost.pred_occ_mask != "fb":
-                    loss = criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
+                if self.cfg.cost.pred_occ_mask is None:
+                    #loss = criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
+                    loss = criterion(outputs["out"], outputs["tgt"], self.cfg.model.charbonnier_flatness)
                 else:
-                    occ_weights = torch.gt(outputs["pred_occ_mask"], torch.Tensor([0.5]).to(outputs["pred_occ_mask"].device))
-                    loss = criterion(outputs["out"], outputs["tgt"]*border_weights, self.cfg.model.charbonnier_flatness)
+                    #occ_weights = torch.gt(outputs["pred_occ_mask"], torch.Tensor([0.5]).to(outputs["pred_occ_mask"].device))
+                    occ_weights = outputs["pred_occ_mask"].to(outputs["out"].device)
+                    #loss = criterion(outputs["out"]*occ_weights, outputs["tgt"]*border_weights*occ_weights, self.cfg.model.charbonnier_flatness)
+                    loss = criterion(outputs["out"]*occ_weights, outputs["tgt"]*occ_weights, self.cfg.model.charbonnier_flatness)
 
         if self.global_step > 0:
             if self.three_frames:
-                temp_smooth_reg = temporal_smoothness_loss(outputs['positions'], r=None)#r=0.5)
+                if self.cfg.model.temp_on_occ:
+                    if self.cfg.cost.pred_occ_mask not in ["3fb", "gt"]:
+                        raise ValueError
+                    occ_weights = 1. - occ_weights
+                    if self.cfg.cost.pred_occ_mask == "3fb":
+                        occ_weights = occ_weights * torch.gt(border_weights, torch.Tensor([0.5]).to(border_weights.device)).float()
+                        outputs["pred_occ_mask"] = occ_weights.to(outputs["pred_occ_mask"].dtype)[:, :, 0, None]
+                    temp_occ_mask = occ_weights[:, :, 0, ..., None]
+
+                    #temp_occ_mask = 1. - torch.abs(1. - torch.sum(temp_occ_mask, dim=1, keepdim=True)) # xor
+                    #temp_smooth_reg = temporal_smoothness_loss(outputs['positions'] * temp_occ_mask, r=None)
+
+                    temp_smooth_reg = temporal_smoothness_loss(outputs['positions'][:, 0] * temp_occ_mask[:, 0], r=None, flow_fields_b=outputs['positions'][:, 1].detach() * temp_occ_mask[:, 0])
+                    temp_smooth_reg += temporal_smoothness_loss(outputs['positions'][:, 1] * temp_occ_mask[:, 1], r=None, flow_fields_b=outputs['positions'][:, 0].detach() * temp_occ_mask[:, 1])
+                    temp_smooth_reg *= 0.5
+                else:
+                    temp_smooth_reg = temporal_smoothness_loss(outputs['positions'], r=None)#r=0.5)
                 #temp_smooth_reg = full_temporal_smoothness_loss(outputs['weights'])
                 loss += self.cfg.model.temp_smoothness * temp_smooth_reg
 
@@ -563,6 +604,9 @@ class OverfitSoftLearner(L.LightningModule):
 
 
     def training_step(self, batch, batch_idx):
+        if self.global_step > self.cfg.model.border_handling_on:
+            self.model.border_handling = self.cfg.model.border_handling
+
         model_opt, temp_opt = self.optimizers()
         sched = self.lr_schedulers()
         model_opt.zero_grad()
@@ -588,18 +632,21 @@ class OverfitSoftLearner(L.LightningModule):
             self.select_in = (self.select_in + 1) % 2
         elif self.three_frames:
             if self.cfg.cost.pred_occ_mask == "3fb":
-                outputs = self.model(batch,
-                                     temp=self.temp, 
-                                     src_idx=[1,1],
-                                     tgt_idx=[0,2])
-                occ_mask = outputs["pred_occ_mask"]
-                del outputs
+                with torch.no_grad():
+                    outputs = self.model(batch,
+                                         temp=self.temp, 
+                                         src_idx=[1,1],
+                                         tgt_idx=[2,0])
+                    occ_mask = outputs["pred_occ_mask"].detach()
+                    #occ_mask_2 = outputs["pred_occ_mask_high"].detach()
+                    del outputs
             outputs = self.model(batch,
                                  temp=self.temp, 
                                  src_idx=[2,0],
                                  tgt_idx=[1,1])
             if self.cfg.cost.pred_occ_mask == "3fb":
                 outputs["pred_occ_mask"] = occ_mask
+                #outputs["pred_occ_mask_high"] = occ_mask_2
         else:
             outputs = self.model(batch,
                                  src_idx=[2],
@@ -648,6 +695,9 @@ class OverfitSoftLearner(L.LightningModule):
         sched.step()
 
     def validation_step(self, batch, batch_idx):
+        if self.global_step > self.cfg.model.border_handling_on:
+            self.model.border_handling = self.cfg.model.border_handling
+
         check_flow = None if batch.flow is None else batch.flow[0]
         if self.three_frames:
             flow_max = max(self.check_filter_size(batch.frames_up[1], batch.frames_up[2], check_flow), self.check_filter_size(batch.frames_up[1], batch.frames_up[0], check_flow))
@@ -705,10 +755,20 @@ class OverfitSoftLearner(L.LightningModule):
                                      src_idx=[2,1],
                                      tgt_idx=[1,2])
             elif self.three_frames:
+                if self.cfg.cost.pred_occ_mask == "3fb":
+                    with torch.no_grad():
+                        outputs = self.model(batch,
+                                             temp=self.temp, 
+                                             src_idx=[1,1],
+                                             tgt_idx=[2,0])
+                        occ_mask = outputs["pred_occ_mask"].detach()
+                        del outputs
                 outputs = self.model(batch,
                                      temp=self.temp, 
                                      src_idx=[2,0],
                                      tgt_idx=[1,1])
+                if self.cfg.cost.pred_occ_mask == "3fb":
+                    outputs["pred_occ_mask"] = occ_mask
                 outputs_100 = self.model(batch,
                                      temp=self.temp * 100, 
                                      src_idx=[2,0],
@@ -929,6 +989,7 @@ class OverfitSoftLearner(L.LightningModule):
                 self.logger.log_image(key='colorwheel', images=self.chunk(wheel_flow), step=self.global_step) # grayscale image of the expected norm of the flow
 
                 if self.cfg.validation.full_val_every is not None and self.global_step - self.last_full_val >= self.cfg.validation.full_val_every:
+                    self.last_full_val = self.global_step
                     if self.val_dataset is not None:
                         import src.evaluation as evaluation
                         self.val_dataset.return_uncropped = True
@@ -936,14 +997,42 @@ class OverfitSoftLearner(L.LightningModule):
                             b.to(batch.frames[0].device)
                             #return tiled_pred(self.model, lambda x, y: torch.nanmean(torch.linalg.norm(x - y, dim=1)), b, temp=self.temp)[0]
                             return tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp)
-                            print("fake model fwd!!")
                             #return tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp) * b.masks["not_occ"] + b.masks["occ"] * b.flow[0]
-                        full_out = evaluation.evaluate(self.val_dataset, model_fwd, cfg=self.cfg)
+                        #full_out = evaluation.evaluate(self.val_dataset, model_fwd, cfg=self.cfg)
+                        full_out = evaluation.evaluate_against(self.val_dataset, model_fwd, evaluation.get_smurf_fwd(self.val_dataset, device=batch.frames[0].device), cfg=self.cfg)
                         self.logger.log_image(key="FULL_random", images=[full_out["random"]])
                         self.logger.log_image(key="FULL_worst", images=[full_out["worst"]])
                         self.logger.log_image(key="FULL_best", images=[full_out["best"]])
+                        if "worst_comp" in full_out.keys():
+                            self.logger.log_image(key="FULL_worst_comp", images=[full_out["worst_comp"]])
+                        if "best_comp" in full_out.keys():
+                            self.logger.log_image(key="FULL_best_comp", images=[full_out["best_comp"]])
                         self.log_dict({"FULL_" + k: v.nanmean().item() for k, v in full_out["metrics"].items()}, batch_size=batch.frames[0].shape[0])
                         print({"FULL_" + k: v.nanmean().item() for k, v in full_out["metrics"].items()})
+                        if "metrics2" in full_out.keys():
+                            self.log_dict({"FULL_" + k: v.nanmean().item() for k, v in full_out["metrics"].items()}, batch_size=batch.frames[0].shape[0])
+
+                        """
+                        def model_fwd_bwd(b):
+                            b.to(batch.frames[0].device)
+                            fwd = tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp)
+                            occ = tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp, out_key='pred_occ_mask')
+                            b = Batch.index(b, [0, 2, 1])
+                            bwd = tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp)
+                            return (fwd + bwd) * ((1. - occ) * 0.75 + 0.25)
+                        full_out_back = evaluation.evaluate_against(self.val_dataset, model_fwd_bwd, evaluation.get_smurf_fwd(self.val_dataset, device=batch.frames[0].device), cfg=self.cfg)
+                        self.logger.log_image(key="FULL_bwd_random", images=[full_out_back["random"]])
+
+                        def model_fwd_bwd(b):
+                            b.to(batch.frames[0].device)
+                            occ = tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp, out_key='pred_occ_mask', loss_fn=self.loss)
+                            ret = occ.repeat(1, 2, 1, 1)
+                            return ret
+                        full_out_back = evaluation.evaluate_against(self.val_dataset, model_fwd_bwd, evaluation.get_smurf_fwd(self.val_dataset, device=batch.frames[0].device), cfg=self.cfg)
+                        self.logger.log_image(key="FULL_occ_random", images=[full_out_back["random"]])
+                        """
+                else:
+                    print(f"{self.cfg.validation.full_val_every - (self.global_step - self.last_full_val)} steps until next fullval")
 
                 if self.cfg.cost.method in ['feats', 'nn']:
                     if self.cfg.cost.method == 'feats':
@@ -983,8 +1072,6 @@ class OverfitSoftLearner(L.LightningModule):
                     """
                     self.old_epe_full = epe_full
             
-            if self.global_step > self.cfg.model.border_handling_on:
-                self.model.border_handling = self.cfg.model.border_handling
 
 def compute_epe(gt, pred, scale_to=None):
     _, _, h_pred, w_pred = pred.size()

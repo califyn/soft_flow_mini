@@ -101,10 +101,14 @@ def pad_for_filter(in_frames, weight_sl, downsample_factor, border_fourth_channe
             in_shape_fourth[2] = 1
 
             in_frames_fourth = in_frames.new_ones(tuple(in_shape_fourth))
-            in_frames = torch.cat((in_frames, in_frames_fourth), dim=2)
+            #in_frames = torch.cat((in_frames, in_frames_fourth), dim=2)
 
         in_frames_reshaped = torch.reshape(in_frames, (in_frames.shape[0] * in_frames.shape[1], in_frames.shape[2], in_frames.shape[3], in_frames.shape[4]))
-        x_padded = F.pad(in_frames_reshaped, (t, t, t, t), mode='replicate', value=0)
+        x_padded = F.pad(in_frames_reshaped, (t, t, t, t), mode='replicate')
+        if border_fourth_channel:
+            in_frames_fourth_reshaped = torch.reshape(in_frames_fourth, (in_frames_fourth.shape[0] * in_frames_fourth.shape[1], in_frames_fourth.shape[2], in_frames_fourth.shape[3], in_frames_fourth.shape[4]))
+            x_padded_fourth = F.pad(in_frames_fourth_reshaped, (t, t, t, t), mode='constant', value=0)
+            x_padded = torch.cat((x_padded, x_padded_fourth), dim=1)
         #if border_fourth_channel:
         #    x_padded[:, -1, :, :] = torch.ones_like(x_padded[:, -1, :, :])
         x_padded = torch.reshape(x_padded, (in_shape[0], in_shape[1], *x_padded.shape[1:]))
@@ -113,6 +117,7 @@ def pad_for_filter(in_frames, weight_sl, downsample_factor, border_fourth_channe
 
     if unfold:
         x_padded = x_padded.unfold(3, weight_sl + downsample_factor - 1, downsample_factor).unfold(4, weight_sl + downsample_factor - 1, downsample_factor)  
+        #x_padded_alt = torch.nn.Unfold(
 
     return x_padded
 
@@ -165,11 +170,12 @@ def transpose_filter(fil, downsample_factor=1):
     idxs = idxs[:, idxs[6] == 1]
     dx, x_, x, dy, y_, y, _ = tuple(torch.chunk(idxs, 7, dim=0))
 
-    flow[:, :, R // 2 - dx, R // 2 - dy, x, y] = flow[:, :, R // 2 + dx, R // 2 + dy, x_, y_]
-    flow = torch.permute(flow, (0, 1, 4, 5, 2, 3))
-    return flow
+    t_flow = torch.zeros_like(flow)
+    t_flow[:, :, R // 2 - dx, R // 2 - dy, x, y] = flow[:, :, R // 2 + dx, R // 2 + dy, x_, y_]
+    t_flow = torch.permute(t_flow, (0, 1, 4, 5, 2, 3))
+    return t_flow
 
-def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9):
+def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, out_key='flow', loss_fn=None):
     # this could be a lot better in a lot of ways, but it should work for now
     H, W = batch.frames[0].shape[2], batch.frames[0].shape[3]
     assert(crop[0] <= H and crop[1] <= W)
@@ -217,14 +223,31 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9):
             return img
         return tuple(patch_crop), get_estimate_fn
 
-    estimate = torch.full_like(batch.flow[0], float('nan'))
+    if out_key == 'flow':
+        estimate = torch.full_like(batch.flow[0], float('nan'))
+    elif out_key == 'pred_occ_mask':
+        estimate = torch.full_like(batch.flow[0][:, 0, None], float('nan'))
     for x_region in zip(x_idxs[:-1], x_idxs[1:]):
         for y_region in zip(y_idxs[:-1], y_idxs[1:]):
             patch_crop, get_estimate_fn = generate_crop_from_region(*x_region, *y_region)
             cropped_batch = crop_batch_fn(batch, patch_crop)
             
-            out_flow = model(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
-            out_flow = out_flow["positions"][:, 0].permute(0, 3, 1, 2).float()
+            if out_key == 'flow':
+                out_flow = model(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
+                out_flow = out_flow["positions"][:, 0].permute(0, 3, 1, 2).float()
+            elif out_key == 'pred_occ_mask':
+                out = model(cropped_batch, temp=temp, src_idx=[1], tgt_idx=[2])
+                if out["pred_occ_mask"] is not None:
+                    out_flow = 1. - out["pred_occ_mask"][:, 0].float()
+                else:
+                    out_flow = torch.ones((out["positions"].shape[0], 1, out["positions"].shape[2], out["positions"].shape[3])).to(out["positions"].device)
+                if model.border_handling in ["pad_feats", "fourth_channel"]:
+                    out_border = model(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
+                    border_weights = out_border["out"][:, 0, -1, None].detach()
+                    #border_weights = 1. - torch.gt(border_weights, torch.Tensor([0.5]).to(border_weights.device)).float()
+                    border_weights = torch.gt(border_weights, torch.Tensor([0.5]).to(border_weights.device)).float()
+                    #print(out_flow.shape, border_weights.shape, out_flow.dtype, border_weights.dtype, out_flow[..., :5, :5], border_weights[..., :5, :5], (out_flow * border_weights)[..., :5, :5])
+                    out_flow = out_flow * border_weights # border weights mean is 0.027
             out_flow = get_estimate_fn(out_flow)
             
             estimate[..., x_region[0]:x_region[1], y_region[0]:y_region[1]] = out_flow

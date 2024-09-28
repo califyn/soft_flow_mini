@@ -11,7 +11,7 @@ import random
 import h5py
 
 class Batch():
-    def __init__(self, frames, frames_up, frames_orig, frames_col, frames_up_col, flow, flow_orig, path, masks={}, collate_different_shapes="error"):
+    def __init__(self, frames, frames_up, frames_orig, frames_col, frames_up_col, flow, flow_orig, path, masks={}, collate_different_shapes="error", crop_masks={}):
         self.frames = frames
         self.frames_up = frames_up
         self.frames_orig = frames_orig
@@ -22,6 +22,7 @@ class Batch():
         self.path = path 
         self.masks = masks
         self.collate_different_shapes = collate_different_shapes
+        self.crop_masks = crop_masks
 
         """
         print({
@@ -52,7 +53,8 @@ class Batch():
     def collate_fn(list_instances): # does NOT support mixing datasets
         assert(list_instances[0].frames[0].ndim == 3)
         
-        shapes = [tuple(b.frames[0][:2]) for b in list_instances]
+        """
+        shapes = [tuple(list(b.frames[0][:2])) for b in list_instances]
         all_equal_shapes = all([s == shapes[0] for s in shapes])
         if not all_equal_shapes:
             handler = list_instances[0].collate_different_shapes
@@ -61,6 +63,7 @@ class Batch():
             elif handler == "first":
                 list_instances = [l for l, s in zip(list_instances, shapes) if s == shapes[0]]
 
+        """
         return Batch(
             [torch.stack([b.frames[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames))],
             [torch.stack([b.frames_up[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_up))],
@@ -71,10 +74,11 @@ class Batch():
             None if list_instances[0].flow is None else [torch.stack([b.flow_orig[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].flow_orig))],
             [b.path for b in list_instances],
             masks={name: torch.stack([b.masks[name] for b in list_instances], dim=0) for name in list_instances[0].masks.keys()},
+            crop_masks={name: torch.stack([b.crop_masks[name] for b in list_instances], dim=0) for name in list_instances[0].crop_masks.keys()},
         )
 
     @staticmethod
-    def index(batch, idx):
+    def index(batch, idx): # Index along the FRAME dimension
         assert(batch.frames[0].ndim == 4)
         if isinstance(idx, list):
             return Batch(
@@ -85,7 +89,9 @@ class Batch():
                [batch.frames_up_col[i] for i in idx],
                batch.flow,
                batch.flow_orig,
-               [batch.path[i] for i in idx],
+               batch.path,
+               masks=batch.masks,
+               crop_masks=batch.crop_masks,
             )
         else:
             raise ValueError('idx for batch should be list')
@@ -119,7 +125,7 @@ def load_flow(path):
         raise ValueError(f"{path} doesn't have extension flo or npy")
 
 class SuperResDataset():
-    def __init__(self, cfg, split):
+    def __init__(self, cfg, split, is_val=False):
         if not isinstance(cfg.dataset.imsz, int):
             self.imsz = [int(x) for x in cfg.dataset.imsz.split(",")]
         else:
@@ -142,6 +148,7 @@ class SuperResDataset():
         self.collate_different_shapes_mode = "error"
         self.iters = 0 # for validation randomness
         self.return_uncropped = False
+        self.is_val = is_val
 
     def load_paths(self, *args, **kwargs):
         raise NotImplementedError("need specific dataset!")
@@ -245,7 +252,7 @@ class SuperResDataset():
             x_extra = batch.frames[0].shape[1] - self.crop_to[0]
             y_extra = batch.frames[0].shape[2] - self.crop_to[1]
             if self.augmentations.random_crop:
-                if self.split == "validation":
+                if self.is_val:
                     #random.seed(1000 * (self.iters % 4) + idx)
                     random.seed(1000 * 1 + idx)
                 x1 = int(random.random() * x_extra)
@@ -272,6 +279,11 @@ class SuperResDataset():
         up_ratio *= self.imsz_super_res
         for i, p in enumerate(batch.flow_orig):
             batch.flow_orig[i] = self.crop(p, [x1 * up_ratio + self.image_trim[2], x2 * up_ratio + self.image_trim[3], y1 * up_ratio + self.image_trim[0], y2 * up_ratio + self.image_trim[1]])
+
+        batch.crop_masks = {}
+        for k, v in batch.masks.items():
+            assert(up_ratio == 1)
+            batch.crop_masks[k] = self.crop(v, [x1, x2, y1, y2])
         return batch
 
     def __getitem__(self, idx):
