@@ -35,15 +35,17 @@ cost:
 dataset:
     dataset: sintel
     train_split: validation
-    idx: 16
+    val_split: validation
+    idx: 0
     imsz: 1 
     imsz_super: 1
     dstype: clean
     augmentations:
-        random_crop: true
+        random_crop: false
         color: false
     flow_max: 15
     crop_to: 224,224
+    use_feats: implicit
     num_workers: 0
 training:
     precision: 32
@@ -58,10 +60,10 @@ training:
     weight_decay: 0.
     ckpt_every: 1500 #12500
 validation:
-    check_epoch: 100
+    check_epoch: 50
     limit_batch: 1
     check_interval: 1
-    full_val_every: 100
+    full_val_every: null #100
     data:
         batch_size: 1
         shuffle: false

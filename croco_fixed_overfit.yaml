@@ -45,6 +45,8 @@ dataset:
         color: false
     flow_max: 15
     crop_to: 224,224
+    use_feats: null
+    num_workers: 7
 training:
     precision: 32
     data:
@@ -58,10 +60,10 @@ training:
     weight_decay: 0.
     ckpt_every: 1500 #12500
 validation:
-    check_epoch: 100
+    check_epoch: 10 #100
     limit_batch: 1
     check_interval: 1
-    full_val_every: 100
+    full_val_every: 10 #100
     data:
         batch_size: 1
         shuffle: false

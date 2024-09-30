@@ -48,14 +48,14 @@ def run(cfg: DictConfig):
     train_dataloader = torch.utils.data.DataLoader(
                 train_dataset,
                 batch_size=cfg.training.data.batch_size,
-                num_workers=7,
+                num_workers=cfg.dataset.num_workers,
                 shuffle=False,
                 collate_fn=Batch.collate_fn
             )
     val_dataloader = torch.utils.data.DataLoader(
                 val_dataset,
                 batch_size=cfg.validation.data.batch_size,
-                num_workers=7,
+                num_workers=cfg.dataset.num_workers,
                 shuffle=False,
                 collate_fn=Batch.collate_fn
             )
@@ -63,6 +63,7 @@ def run(cfg: DictConfig):
 
     # Set image size
     _ = train_dataset[0] # get image size
+    _ = val_dataset[0] # get image size
     if cfg.dataset.crop_to is None:
         cfg.dataset.imsz = str(train_dataset.imsz[0]) + "," + str(train_dataset.imsz[1])
         cfg.dataset.imsz_super = str(train_dataset.imsz_super[0]) + "," + str(train_dataset.imsz_super[1])

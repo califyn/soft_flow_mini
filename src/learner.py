@@ -199,6 +199,8 @@ class SoftMultiFramePredictor(torch.nn.Module):
                 else:
                     self.nn = CroCoDPTWrapper(feat_dim, (self.height, self.width))
 
+        self.use_feats = cfg.dataset.use_feats
+
 
     def _get_nd_butterworth_filter(
         self, shape, factor, dtype=torch.float64, squared_butterworth=True
@@ -265,13 +267,18 @@ class SoftMultiFramePredictor(torch.nn.Module):
         return ret
 
     def forward(self, batch, weights=None, temp=None, src_idx=0, tgt_idx=1):
-        in_frames = torch.stack(batch.frames_up, dim=1)
-        in_down = torch.stack(batch.frames, dim=1)
-        #assert(in_frames.shape[0] == 1)
-
+        if self.use_feats is not None:
+            in_frames = torch.stack(batch.frames_up_feat, dim=1)
+        else:
+            in_frames = torch.stack(batch.frames_up, dim=1)
         src_in_up = torch.stack([in_frames[:, s] for s in src_idx], dim=1)
+
+        in_down = torch.stack(batch.frames_col, dim=1)
         src_in = torch.stack([in_down[:, s] for s in src_idx], dim=1)
         tgt_in = torch.stack([in_down[:, t] for t in tgt_idx], dim=1)
+        if self.use_feats is not None:
+            in_down = torch.stack(batch.frames_feat, dim=1)
+        tru_tgt = torch.stack([in_down[:, t] for t in tgt_idx], dim=1)
 
         pred_occ_mask = None
         #pred_occ_mask_high = None
@@ -329,7 +336,8 @@ class SoftMultiFramePredictor(torch.nn.Module):
                     if self.method == "feats":
                         tgt_feats = self.feats[:, tgt_idx, None]
                     elif self.method == "nn":
-                        tgt_feats = self.nn(in_frames[:, tgt_idx])
+                        #tgt_feats = self.nn(in_frames[:, tgt_idx])
+                        tgt_feats = torch.reshape(tgt_in_, (in_frames.shape[0], len(tgt_idx), -1, *tgt_in.shape[3:]))
                 else:
                     if self.method == "feats":
                         tgt_feats = torch.stack([self.feats[:, t] for t in tgt_idx], dim=1)
@@ -385,7 +393,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
                     'exp_norm':expected_norm, 
                     'src': src_in, 
                     'src_up': src_in_up,
-                    'tgt': tgt_in,
+                    'tgt': tru_tgt,
                     'pred_occ_mask': pred_occ_mask,
                     #'pred_occ_mask_high': pred_occ_mask_high,
                 }
@@ -920,13 +928,16 @@ class OverfitSoftLearner(L.LightningModule):
             print(epe_full)
             #"val/var_mean": torch.mean(outputs["var"])
             target = outputs["tgt"][:, 0]
-
+            if self.cfg.dataset.use_feats is not None:
+                target = target[:, :3]
             fwd_flow = fwd_flows[-1]
             fwd_flow_100 = fwd_flows_100[-1]
             bwd_flow = bwd_flows[-1]
 
             warped_imgs_flow = warp(batch.frames[1], fwd_flow)
             warped_imgs_fwd = outputs["out"][:, -1]
+            if self.cfg.dataset.use_feats is not None:
+                warped_imgs_fwd = warped_imgs_fwd[:, :3]
 
             fwd_flows = torchvision.utils.flow_to_image(fwd_flow) / 255 * torch.max(batch.frames[1])
             fwd_flows_100 = torchvision.utils.flow_to_image(fwd_flow_100) / 255 * torch.max(batch.frames[1])
@@ -1022,16 +1033,33 @@ class OverfitSoftLearner(L.LightningModule):
                             return (fwd + bwd) * ((1. - occ) * 0.75 + 0.25)
                         full_out_back = evaluation.evaluate_against(self.val_dataset, model_fwd_bwd, evaluation.get_smurf_fwd(self.val_dataset, device=batch.frames[0].device), cfg=self.cfg)
                         self.logger.log_image(key="FULL_bwd_random", images=[full_out_back["random"]])
+                        """
 
                         def model_fwd_bwd(b):
                             b.to(batch.frames[0].device)
-                            occ = tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp, out_key='pred_occ_mask', loss_fn=self.loss)
+                            t_patch = math.ceil((self.model.weight_sl//2)/16)*16
+
+                            input_2 = torch.nn.functional.pad(batch.frames[2], (t_patch, t_patch, t_patch, t_patch), mode="constant")
+                            input_1 = torch.nn.functional.pad(batch.frames[1], (t_patch, t_patch, t_patch, t_patch), mode="constant")
+                            tgt_feats = self.model.nn(input_1, input_2)
+                            query = tgt_feats[0, :, tgt_feats.shape[2]//2, tgt_feats.shape[3]//2]
+
+                            def get_dprod(bb):
+                                input_2 = torch.nn.functional.pad(bb.frames[2], (t_patch, t_patch, t_patch, t_patch), mode="constant")
+                                input_1 = torch.nn.functional.pad(bb.frames[1], (t_patch, t_patch, t_patch, t_patch), mode="constant")
+                                src_feats = self.model.nn(input_2, input_1)
+                                #tgt_feats = self.model.nn(input_1, input_2)
+                                src_feats = src_feats / torch.linalg.norm(src_feats, dim=1, keepdim=True)
+                                #tgt_feats = tgt_feats / torch.linalg.norm(tgt_feats, dim=1, keepdim=True)
+                                
+                                return torch.sum(src_feats[:, :, t_patch:-t_patch, t_patch:-t_patch] * query[None, :, None, None], dim=1, keepdim=True)
+ 
+                            occ = tiled_pred(get_dprod, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp, out_key='given', loss_fn=self.loss)
                             ret = occ.repeat(1, 2, 1, 1)
                             return ret
                         full_out_back = evaluation.evaluate_against(self.val_dataset, model_fwd_bwd, evaluation.get_smurf_fwd(self.val_dataset, device=batch.frames[0].device), cfg=self.cfg)
-                        self.logger.log_image(key="FULL_occ_random", images=[full_out_back["random"]])
-                        """
-                else:
+                        self.logger.log_image(key="FULL_dprod_random", images=[full_out_back["random"]])
+                elif self.cfg.validation.full_val_every is not None:
                     print(f"{self.cfg.validation.full_val_every - (self.global_step - self.last_full_val)} steps until next fullval")
 
                 if self.cfg.cost.method in ['feats', 'nn']:

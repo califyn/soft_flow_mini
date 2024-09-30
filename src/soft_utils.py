@@ -225,7 +225,7 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, o
 
     if out_key == 'flow':
         estimate = torch.full_like(batch.flow[0], float('nan'))
-    elif out_key == 'pred_occ_mask':
+    elif out_key in ['pred_occ_mask', 'given']:
         estimate = torch.full_like(batch.flow[0][:, 0, None], float('nan'))
     for x_region in zip(x_idxs[:-1], x_idxs[1:]):
         for y_region in zip(y_idxs[:-1], y_idxs[1:]):
@@ -248,6 +248,8 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, o
                     border_weights = torch.gt(border_weights, torch.Tensor([0.5]).to(border_weights.device)).float()
                     #print(out_flow.shape, border_weights.shape, out_flow.dtype, border_weights.dtype, out_flow[..., :5, :5], border_weights[..., :5, :5], (out_flow * border_weights)[..., :5, :5])
                     out_flow = out_flow * border_weights # border weights mean is 0.027
+            elif out_key == 'given':
+               out_flow = model(cropped_batch)
             out_flow = get_estimate_fn(out_flow)
             
             estimate[..., x_region[0]:x_region[1], y_region[0]:y_region[1]] = out_flow

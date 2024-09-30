@@ -10,13 +10,17 @@ from copy import deepcopy
 import random
 import h5py
 
+from src.feats import img_to_feats, project_pca
+
 class Batch():
-    def __init__(self, frames, frames_up, frames_orig, frames_col, frames_up_col, flow, flow_orig, path, masks={}, collate_different_shapes="error", crop_masks={}):
+    def __init__(self, frames, frames_up, frames_orig, frames_col, frames_up_col, frames_feat, frames_up_feat, flow, flow_orig, path, masks={}, collate_different_shapes="error", crop_masks={}):
         self.frames = frames
         self.frames_up = frames_up
         self.frames_orig = frames_orig
         self.frames_col = frames_col
         self.frames_up_col = frames_up_col
+        self.frames_feat = frames_feat
+        self.frames_up_feat = frames_up_feat
         self.flow = flow
         self.flow_orig = flow_orig
         self.path = path 
@@ -42,6 +46,8 @@ class Batch():
         self.frames_orig = [x.to(device) for x in self.frames_orig]
         self.frames_col = [x.to(device) for x in self.frames_col]
         self.frames_up_col = [x.to(device) for x in self.frames_up_col]
+        self.frames_feat = [x.to(device) for x in self.frames_feat]
+        self.frames_up_feat = [x.to(device) for x in self.frames_up_feat]
         if self.flow is not None:
             self.flow = [x.to(device) for x in self.flow]
         if self.flow_orig is not None:
@@ -70,6 +76,8 @@ class Batch():
             [torch.stack([b.frames_orig[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_orig))],
             [torch.stack([b.frames_col[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_col))],
             [torch.stack([b.frames_up_col[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_up_col))],
+            [torch.stack([b.frames_feat[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_feat))],
+            [torch.stack([b.frames_up_feat[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_up_feat))],
             None if list_instances[0].flow is None else [torch.stack([b.flow[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].flow))],
             None if list_instances[0].flow is None else [torch.stack([b.flow_orig[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].flow_orig))],
             [b.path for b in list_instances],
@@ -87,6 +95,8 @@ class Batch():
                [batch.frames_orig[i] for i in idx],
                [batch.frames_col[i] for i in idx],
                [batch.frames_up_col[i] for i in idx],
+               [batch.frames_feat[i] for i in idx],
+               [batch.frames_up_feat[i] for i in idx],
                batch.flow,
                batch.flow_orig,
                batch.path,
@@ -140,6 +150,8 @@ class SuperResDataset():
         self.idx = cfg.dataset.idx
         self.augmentations = cfg.dataset.augmentations
         self.crop_to = None if cfg.dataset.crop_to is None else [int(x) for x in cfg.dataset.crop_to.split(",")]
+        self.use_feats = cfg.dataset.use_feats
+        self.img_as_feat = None
 
         self.load_paths(cfg, split)
         self.transform = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -149,6 +161,8 @@ class SuperResDataset():
         self.iters = 0 # for validation randomness
         self.return_uncropped = False
         self.is_val = is_val
+
+        self.is_overfitting = cfg.training.overfit_batch == 1
 
     def load_paths(self, *args, **kwargs):
         raise NotImplementedError("need specific dataset!")
@@ -382,8 +396,29 @@ class SuperResDataset():
             flow_masks = {k: v[:, ::2, ::2] for k, v in flow_masks.items()}
         masks = masks | flow_masks
         
-        batch = Batch(image, image_up, image_orig, image_col, image_up_col, flow, flow_orig, frame_paths[1], masks=masks, collate_different_shapes=self.collate_different_shapes_mode)
+        batch = Batch(image, image_up, image_orig, image_col, image_up_col, None, None, flow, flow_orig, frame_paths[1], masks=masks, collate_different_shapes=self.collate_different_shapes_mode)
         if not self.return_uncropped and self.crop_to is not None:
             batch = self.crop_batch(batch, idx=idx)
+
+        if self.use_feats is not None:
+            # Not handling downsampling for now
+            assert(batch.frames[i].shape[-1] == batch.frames_up[i].shape[-1])
+            assert(self.is_overfitting)
+            assert(not self.augmentations.random_crop)
+            if self.img_as_feat is None:
+                self.img_as_feat = []
+                batch.frames_feat = [None] * len(batch.frames)
+                batch.frames_up_feat = [None] * len(batch.frames_up)
+                for i, p in enumerate(batch.frames):
+                    img_as_feat = img_to_feats(p[None].to("cuda"), self.use_feats)[0].cpu()
+                    self.img_as_feat.append(torch.Tensor(img_as_feat.detach().cpu().numpy()))
+                projected = project_pca(torch.stack(self.img_as_feat, dim=0), 64)
+                assert(self.img_as_feat[0].shape)
+                self.img_as_feat = [x[0] for x in torch.chunk(projected, 3, dim=0)]
+            batch.frames_feat = deepcopy(self.img_as_feat)
+            batch.frames_up_feat = deepcopy(self.img_as_feat)
+        else:
+            batch.frames_feat = deepcopy(batch.frames)
+            batch.frames_up_feat = deepcopy(batch.frames_up)
          
         return batch
