@@ -4,6 +4,8 @@ wandb/
 __pycache__/
 
 *.png
+*.gif
+*.mp4
 *.pt
 *.ckpt
 *.swp

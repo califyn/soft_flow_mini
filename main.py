@@ -13,6 +13,7 @@ from data.roaming_images import RoamingImagesDataset
 from data.superres import Batch
 from src.learner import OverfitSoftLearner
 
+import os
 import wandb
 from wandb_utils import download_latest_checkpoint, rewrite_checkpoint_for_compatibility
 from omegaconf import DictConfig, OmegaConf
@@ -50,14 +51,16 @@ def run(cfg: DictConfig):
                 batch_size=cfg.training.data.batch_size,
                 num_workers=cfg.dataset.num_workers,
                 shuffle=False,
-                collate_fn=Batch.collate_fn
+                collate_fn=Batch.collate_fn,
+                pin_memory=True,
             )
     val_dataloader = torch.utils.data.DataLoader(
                 val_dataset,
                 batch_size=cfg.validation.data.batch_size,
                 num_workers=cfg.dataset.num_workers,
                 shuffle=False,
-                collate_fn=Batch.collate_fn
+                collate_fn=Batch.collate_fn,
+                pin_memory=True,
             )
     print("Dataset loaded...", flush=True)
 
@@ -89,6 +92,7 @@ def run(cfg: DictConfig):
 
     # Set up logging with wandb.
     with open("wandb_api_key.txt", "r") as f:
+        os.environ["WANDB__SERVICE_WAIT"] = "300"
         wandb.login(key=f.readline().strip('\n'))
 
     if cfg.wandb.mode != "disabled":

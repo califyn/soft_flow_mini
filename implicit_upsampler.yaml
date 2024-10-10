@@ -23,7 +23,7 @@ mag_tv_weight: 0.05
 mag_weight: 0.001
 color_feats: true
 pca_batch: 50
-proj_dim: 384 #128
+proj_dim: 384 #383 #32 #128
 max_pad: 30
 use_flips: true
 max_zoom: 1.8

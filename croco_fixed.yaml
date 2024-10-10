@@ -18,7 +18,7 @@ model:
     frameskip: 1
     norm: 0.0
     entropy: 0.0 #1e2
-    feat_dim: 32 #12 #32 #28 #128
+    feat_dim: 32 #64
     temp: 9 #0.1
     temp_scheduling: false 
     charbonnier_flatness: 0.0 #1e-1
@@ -32,6 +32,7 @@ cost:
     method: nn
     model: croco_dpt
     pred_occ_mask: 3fb
+    both_sided: true
 dataset:
     dataset: sintel
     train_split: training 
@@ -45,6 +46,8 @@ dataset:
         color: false
     flow_max: 15
     crop_to: 224,224
+    use_feats: null
+    num_workers: 7
 training:
     precision: 32
     data:

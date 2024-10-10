@@ -10,7 +10,8 @@ from copy import deepcopy
 import random
 import h5py
 
-from src.feats import img_to_feats, project_pca
+#from src.feats import img_to_feats, project_pca
+#from featup.train_implicit_upsampler import get_common_pca
 
 class Batch():
     def __init__(self, frames, frames_up, frames_orig, frames_col, frames_up_col, frames_feat, frames_up_feat, flow, flow_orig, path, masks={}, collate_different_shapes="error", crop_masks={}):
@@ -177,14 +178,44 @@ class SuperResDataset():
         contrast = lambda x: transforms.functional.adjust_contrast(x, jitter_params[2])
         saturation = lambda x: transforms.functional.adjust_saturation(x, jitter_params[3])
         hue = lambda x: transforms.functional.adjust_hue(x, jitter_params[4])
+
         transforms_list = [brightness, contrast, saturation, hue]
         
-        
-
         transformed_imgs = []
         for img in imgs:
             for i in jitter_params[0]:
                 img = transforms_list[i](img)
+            transformed_imgs.append(img)
+
+        """
+        for j in range(3): # each rgb channel, applied independently
+            mask = torch.Tensor([0., 0., 0.]).to(transformed_imgs[0].device)
+            mask[j] = 1.
+            mask = mask[:, None, None]
+
+            if random.random() < 0.08: # invert transform
+                transformed_imgs = [(1. - i) * mask + i * (1 - mask) for i in transformed_imgs]
+        """
+
+        return transformed_imgs
+
+    def _apply_mask_transform(self, *imgs):
+        assert(len(imgs) == 2)
+        assert(imgs[0].shape == imgs[1].shape)
+
+        H, W = imgs[0].shape[1], imgs[0].shape[2]
+        while True:
+            x1, y1 = int(random.random()), int(random.random() * W)
+            x2, y2 = x1 + int(random.random() * H * 0.5), y1 + int(random.random() * W * 0.5)
+            #x1, y1 = int(random.random() * H * 0.75), int(random.random() * W * 0.75)
+            #x2, y2 = x1 + int(H * 0.25 + random.random() * H * 0.5), y1 + int(W * 0.25 + random.random() * W * 0.5)
+            if x2 < H and y2 < W:
+                break
+        
+        transformed_imgs = []
+        for img in imgs:
+            img = deepcopy(img)
+            img[..., x1:x2, y1:y2] = torch.zeros_like(img[..., x1:x2, y1:y2]) # is this ok to mask
             transformed_imgs.append(img)
 
         return transformed_imgs
@@ -288,6 +319,11 @@ class SuperResDataset():
             batch.frames_col[i] = self.crop(p, [x1, x2, y1, y2])
         for i, p in enumerate(batch.frames_up_col):
             batch.frames_up_col[i] = self.crop(p, [x1 * up_ratio, x2 * up_ratio, y1 * up_ratio, y2 * up_ratio])
+        if batch.frames_feat is not None:
+            for i, p in enumerate(batch.frames_feat):
+                batch.frames_feat[i] = self.crop(p, [x1, x2, y1, y2])
+            for i, p in enumerate(batch.frames_up_feat):
+                batch.frames_up_feat[i] = self.crop(p, [x1 * up_ratio, x2 * up_ratio, y1 * up_ratio, y2 * up_ratio])
         for i, p in enumerate(batch.flow):
             batch.flow[i] = self.crop(p, [x1, x2, y1, y2])
         up_ratio *= self.imsz_super_res
@@ -372,11 +408,12 @@ class SuperResDataset():
 
         # Color augmentation
         image_col, image_up_col = [], []
-        if self.augmentations.color:
+        if self.augmentations.color and not self.is_val:
             for p, q in zip(image, image_up):
                 p_transformed, q_transformed = self._apply_color_transform(p, q)
                 image_col.append(p_transformed)
                 image_up_col.append(q_transformed)
+            #image_col, image_up_col = deepcopy(image), deepcopy(image_up)
         else:
             image_col, image_up_col = deepcopy(image), deepcopy(image_up)
 
@@ -400,25 +437,59 @@ class SuperResDataset():
         if not self.return_uncropped and self.crop_to is not None:
             batch = self.crop_batch(batch, idx=idx)
 
-        if self.use_feats is not None:
+        if self.use_feats is not None and self.use_feats != "identity":
             # Not handling downsampling for now
             assert(batch.frames[i].shape[-1] == batch.frames_up[i].shape[-1])
-            assert(self.is_overfitting)
-            assert(not self.augmentations.random_crop)
+            if self.use_feats != "identity":
+                print(self.use_feats)
+                assert(self.is_overfitting)
+                assert(not self.augmentations.random_crop)
             if self.img_as_feat is None:
                 self.img_as_feat = []
                 batch.frames_feat = [None] * len(batch.frames)
                 batch.frames_up_feat = [None] * len(batch.frames_up)
+                #unprojector = get_common_pca([x[None].to("cuda") for x in batch.frames])
                 for i, p in enumerate(batch.frames):
-                    img_as_feat = img_to_feats(p[None].to("cuda"), self.use_feats)[0].cpu()
+                    #unprojector = get_common_pca([p[None].to("cuda")])
+                    img_as_feat = img_to_feats(p[None].to("cuda"), self.use_feats, save_name=f"blank_{i}")[0].cpu()
+                    #img_as_feat = img_to_feats(p[None].to("cuda"), self.use_feats, save_name=f"blank_{i}", unprojector=unprojector)[0].cpu()
+                    #img_as_feat = torch.cat((img_to_feats(p[None].to("cuda"), self.use_feats, save_name=f"randomunet_{i}")[0].cpu() * 1.25, p), dim=0)
                     self.img_as_feat.append(torch.Tensor(img_as_feat.detach().cpu().numpy()))
-                projected = project_pca(torch.stack(self.img_as_feat, dim=0), 64)
-                assert(self.img_as_feat[0].shape)
-                self.img_as_feat = [x[0] for x in torch.chunk(projected, 3, dim=0)]
+                """
+                if self.use_feats == "implicit":
+                    #projected = project_pca(torch.stack(self.img_as_feat, dim=0), 16)
+                    #self.img_as_feat = [x[0] for x in torch.chunk(projected, 3, dim=0)]
+                    tens = torch.stack(self.img_as_feat, dim=0)
+                    tens = torch.permute(tens, (1, 0, 2, 3))
+                    tens_shape = tens.shape
+                    tens = torch.reshape(tens, (tens.shape[0], -1))
+                    tens = torch.nn.functional.normalize(tens, dim=0)
+                    tens = torch.reshape(tens, tens_shape)
+                    tens = torch.permute(tens, (1, 0, 2, 3))
+
+                    self.img_as_feat = [x[0] * 50. for x in torch.chunk(tens, 3, dim=0)]
+                    print("normalized:", [x.mean() for x in self.img_as_feat], [x.min() for x in self.img_as_feat], [x.max() for x in self.img_as_feat])
+                """
             batch.frames_feat = deepcopy(self.img_as_feat)
             batch.frames_up_feat = deepcopy(self.img_as_feat)
         else:
             batch.frames_feat = deepcopy(batch.frames)
             batch.frames_up_feat = deepcopy(batch.frames_up)
+
+        """
+        if self.augmentations.color:
+            assert(self.use_feats == "identity")
+            for i, (p, q) in enumerate(zip(batch.frames, batch.frames_up)):
+                p_transformed, q_transformed = self._apply_color_transform(p, q)
+                batch.frames_feat[i] = p_transformed
+                batch.frames_up_feat[i] = q_transformed
+        """
+        if self.augmentations.mask and not self.is_val:
+            assert(self.use_feats == "identity")
+            for i, (p, q) in enumerate(zip(batch.frames_feat, batch.frames_up_feat)):
+                if i == 1:
+                    p_transformed, q_transformed = self._apply_mask_transform(p, q)
+                    batch.frames_feat[i] = p_transformed
+                    batch.frames_up_feat[i] = q_transformed
          
         return batch

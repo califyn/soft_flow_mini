@@ -10,9 +10,9 @@ model:
     weight_sl: 31
     downsample_factor: 1
     filter_zoom: 1
-    smoothness: 2.5e-1
+    smoothness: 0. #2.5e-1
     smoothness_edge: 150.0
-    pos_smoothness: 0.0 #3e-2
+    pos_smoothness: 3e-2 #3e-2
     temp_smoothness: 3e-1
     temp_on_occ: true
     frameskip: 1
@@ -32,10 +32,11 @@ cost:
     method: nn
     model: croco_dpt
     pred_occ_mask: 3fb
+    both_sided: true
 dataset:
     dataset: sintel
-    train_split: training #validation
-    val_split: training #validation
+    train_split: validation
+    val_split: validation
     idx: 0 #29 
     imsz: 1 
     imsz_super: 1
@@ -43,6 +44,7 @@ dataset:
     augmentations:
         random_crop: true
         color: false
+        mask: false
     flow_max: 15
     crop_to: 224,224
     use_feats: null

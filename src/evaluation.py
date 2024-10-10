@@ -141,19 +141,22 @@ def accumulate_metrics(dataset, model_fwd, cfg=None):
                         continue
                     gt = batch.flow_orig[0]
                     pred = model_fwd(batch)
-                    if isinstance(dataset, SpringSuperResDataset):
-                        gt = upsampled_flow_match(gt, pred)
+                    if pred.shape[1] != 2:
+                        metrics[primary_metric].append(0.)
                     else:
-                        gt = gt.to(pred.device)
-        
-                    metrics['epe'].append(compute_epe(gt, pred).item())
-                    metrics['fl'].append(compute_fl(gt, pred).item())
-                    metrics['1px'].append(compute_fl(gt, pred, mode='spring').item())
-                    for name, mask in batch.masks.items():
-                        mask = mask.to(pred.device)
-                        metrics['epe_' + name].append(compute_epe(gt, pred, mask=mask).item())
-                        metrics['fl_' + name].append(compute_fl(gt, pred, mask=mask).item())
-                        metrics['1px_' + name].append(compute_fl(gt, pred, mask=mask, mode='spring').item())
+                        if isinstance(dataset, SpringSuperResDataset):
+                            gt = upsampled_flow_match(gt, pred)
+                        else:
+                            gt = gt.to(pred.device)
+            
+                        metrics['epe'].append(compute_epe(gt, pred).item())
+                        metrics['fl'].append(compute_fl(gt, pred).item())
+                        metrics['1px'].append(compute_fl(gt, pred, mode='spring').item())
+                        for name, mask in batch.masks.items():
+                            mask = mask.to(pred.device)
+                            metrics['epe_' + name].append(compute_epe(gt, pred, mask=mask).item())
+                            metrics['fl_' + name].append(compute_fl(gt, pred, mask=mask).item())
+                            metrics['1px_' + name].append(compute_fl(gt, pred, mask=mask, mode='spring').item())
         
                     itr.set_postfix({primary_metric: torch.Tensor(metrics[primary_metric]).mean()})
                     i = i + 1
@@ -207,7 +210,19 @@ def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None, warped_fw
             inpainted_flow = torch.stack((torch.Tensor(h_inpainted), torch.Tensor(w_inpainted)), dim=0)[None]
             out['inpaint_gt'].append(flow_to_image(inpainted_flow))
         if 'pred_flow' in display_keys:
-            out['pred_flow'].append(flow_to_image(pred_flow[0]))
+            if pred_flow[0].shape[1] == 2:
+                out['pred_flow'].append(flow_to_image(pred_flow[0]))
+            elif pred_flow[0].shape[1] == 1:
+                out['pred_flow'].append(pred_flow[0].repeat(1, 3, 1, 1))
+            elif pred_flow[0].shape[1] == 3:
+                out['pred_flow'].append(pred_flow[0])
+                if 'diff_flow' in display_keys:
+                    display_keys.remove('diff_flow')
+                    display_keys.remove('diff_flow2')
+                    display_keys.remove('diff_between')
+                out.pop('diff_flow', None)
+                out.pop('diff_flow2', None)
+                out.pop('diff_between', None)
         if 'pred_flow2' in display_keys:
             out['pred_flow2'].append(flow_to_image(pred_flow[1]))
         if 'diff_flow' in display_keys:

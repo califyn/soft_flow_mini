@@ -175,7 +175,7 @@ def transpose_filter(fil, downsample_factor=1):
     t_flow = torch.permute(t_flow, (0, 1, 4, 5, 2, 3))
     return t_flow
 
-def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, out_key='flow', loss_fn=None):
+def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, out_key='flow', loss_fn=None, given_dim=1, do_att_map=True):
     # this could be a lot better in a lot of ways, but it should work for now
     H, W = batch.frames[0].shape[2], batch.frames[0].shape[3]
     assert(crop[0] <= H and crop[1] <= W)
@@ -225,8 +225,10 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, o
 
     if out_key == 'flow':
         estimate = torch.full_like(batch.flow[0], float('nan'))
-    elif out_key in ['pred_occ_mask', 'given']:
+    elif out_key == 'pred_occ_mask':
         estimate = torch.full_like(batch.flow[0][:, 0, None], float('nan'))
+    elif out_key == 'given':
+        estimate = torch.full_like(batch.flow[0][:, 0, None], float('nan')).repeat(1, given_dim, 1, 1)
     for x_region in zip(x_idxs[:-1], x_idxs[1:]):
         for y_region in zip(y_idxs[:-1], y_idxs[1:]):
             patch_crop, get_estimate_fn = generate_crop_from_region(*x_region, *y_region)
@@ -253,6 +255,29 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, o
             out_flow = get_estimate_fn(out_flow)
             
             estimate[..., x_region[0]:x_region[1], y_region[0]:y_region[1]] = out_flow
+
+    if estimate.shape[1] > 5 and do_att_map:
+        query_idx = estimate.shape[2] // 2, int(round(estimate.shape[3] * 0.35)) #estimate.shape[3] // 2#
+        feat_dim = estimate.shape[1] // 2
+        query = estimate[:, feat_dim:, query_idx[0], query_idx[1]]
+
+        estimate = torch.sum(estimate[:, :feat_dim] * query[:, :, None, None], dim=1, keepdim=True)
+
+        estimate_shape = estimate.shape
+        estimate = estimate.reshape((estimate.shape[0], estimate.shape[1], -1))
+        #estimate = torch.nn.functional.softmax(estimate * temp / 2, dim=-1)
+        estimate = estimate.reshape(estimate_shape)
+
+        estimate = estimate.repeat(1, 2, 1, 1)
+
+        """
+        diff_query = batch.flow[0][0, :, query_idx[0], query_idx[1]]
+        query_idx = int(round(query_idx[0] + diff_query[1].item())), int(round(query_idx[1] + diff_query[0].item()))
+        estimate[:, 1, query_idx[0]-2, :] = 1 - (1 - estimate[:, 1, query_idx[0]-2, :]) * 0.8
+        estimate[:, 1, query_idx[0]+2, :] = 1 - (1 - estimate[:, 1, query_idx[0]+2, :]) * 0.8
+        estimate[:, 2, :, query_idx[1]-2] = 1 - (1 - estimate[:, 2, :, query_idx[1]-2]) * 0.8
+        estimate[:, 2, :, query_idx[1]+2] = 1 - (1 - estimate[:, 2, :, query_idx[1]+2]) * 0.8
+        """
 
     return estimate
 

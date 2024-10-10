@@ -28,10 +28,12 @@ source /data/scratch/califyn/.bashrc
 conda activate croco
 cd /data/scratch/califyn/flow_mini
 ulimit -n 50000
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 echo "About to execute..."
 stdbuf -o0 -e0 srun python main.py -n {name} -m {mode} -c {config} -d {id} -r {resume}
 """
-
+#stdbuf -o0 -e0 srun python temp.py
+#stdbuf -o0 -e0 python main_dino.py --arch vit_small --data_path /data/scene-rep/ImageNet1k/train --output_dir ./logs
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
