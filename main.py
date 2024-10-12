@@ -24,6 +24,9 @@ from lightning.pytorch.loggers.wandb import WandbLogger
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.strategies.ddp import DDPStrategy
 
+# prevent memory leak ?
+torch.multiprocessing.set_start_method("fork")
+
 def run(cfg: DictConfig):
     print("Running...", flush=True)
     print("CUDA is available:", torch.cuda.is_available(), flush=True)

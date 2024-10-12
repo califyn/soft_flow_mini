@@ -6,7 +6,7 @@ wandb:
     project: soft_flow
     entity: califyn
 model:
-    three_frames: true
+    inference_mode: three_frames
     weight_sl: 31
     downsample_factor: 1
     filter_zoom: 1
@@ -22,8 +22,6 @@ model:
     temp: 9 #0.1
     temp_scheduling: false 
     charbonnier_flatness: 0.0 #1e-1
-    bisided: false
-    bisided_alternating: false
     fft_filter: null #butter #rect
     fft: 1e-1 #65,95 for rect
     border_handling: pad_feats #fourth_channel #pad_feats
@@ -32,7 +30,7 @@ cost:
     method: nn
     model: croco_dpt
     pred_occ_mask: null # 3fb
-    both_sided: false # FIX true
+    both_sided: true # false # FIX true
 dataset:
     dataset: sintel
     train_split: training 
@@ -42,12 +40,12 @@ dataset:
     imsz_super: 1
     dstype: clean
     augmentations:
-        random_crop: true # FIX false
+        random_crop: true
         color: true # FIX false
         mask: true # FIX false
     flow_max: 15
     crop_to: 224,224
-    use_feats: identity
+    use_feats: null #identity
     num_workers: 7
 training:
     precision: 32

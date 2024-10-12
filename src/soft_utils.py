@@ -101,7 +101,6 @@ def pad_for_filter(in_frames, weight_sl, downsample_factor, border_fourth_channe
             in_shape_fourth[2] = 1
 
             in_frames_fourth = in_frames.new_ones(tuple(in_shape_fourth))
-            #in_frames = torch.cat((in_frames, in_frames_fourth), dim=2)
 
         in_frames_reshaped = torch.reshape(in_frames, (in_frames.shape[0] * in_frames.shape[1], in_frames.shape[2], in_frames.shape[3], in_frames.shape[4]))
         x_padded = F.pad(in_frames_reshaped, (t, t, t, t), mode='replicate')
@@ -109,15 +108,12 @@ def pad_for_filter(in_frames, weight_sl, downsample_factor, border_fourth_channe
             in_frames_fourth_reshaped = torch.reshape(in_frames_fourth, (in_frames_fourth.shape[0] * in_frames_fourth.shape[1], in_frames_fourth.shape[2], in_frames_fourth.shape[3], in_frames_fourth.shape[4]))
             x_padded_fourth = F.pad(in_frames_fourth_reshaped, (t, t, t, t), mode='constant', value=0)
             x_padded = torch.cat((x_padded, x_padded_fourth), dim=1)
-        #if border_fourth_channel:
-        #    x_padded[:, -1, :, :] = torch.ones_like(x_padded[:, -1, :, :])
         x_padded = torch.reshape(x_padded, (in_shape[0], in_shape[1], *x_padded.shape[1:]))
     else:
         x_padded = in_frames
 
     if unfold:
         x_padded = x_padded.unfold(3, weight_sl + downsample_factor - 1, downsample_factor).unfold(4, weight_sl + downsample_factor - 1, downsample_factor)  
-        #x_padded_alt = torch.nn.Unfold(
 
     return x_padded
 
@@ -143,6 +139,7 @@ def downsample_filter(fil, downsample_factor=1):
     fil = torch.sum(fil, dim=(5, 7))
     return fil
 
+"""
 def transpose_filter(fil, downsample_factor=1):
     flow = fil.clone()
     flow = downsample_filter(flow, downsample_factor=downsample_factor)
@@ -174,6 +171,18 @@ def transpose_filter(fil, downsample_factor=1):
     t_flow[:, :, R // 2 - dx, R // 2 - dy, x, y] = flow[:, :, R // 2 + dx, R // 2 + dy, x_, y_]
     t_flow = torch.permute(t_flow, (0, 1, 4, 5, 2, 3))
     return t_flow
+"""
+
+def get_range(fil):
+    weight_sl = fil.shape[-1]
+    t = weight_sl // 2
+
+    fold = torch.nn.Fold((fil.shape[2] + t*2, fil.shape[3] + t*2), weight_sl)
+    fil = fil.permute(0, 1, 4, 5, 2, 3).reshape(fil.shape[0], fil.shape[1]*fil.shape[4]*fil.shape[5], fil.shape[2]*fil.shape[3])
+
+    fil_range = fold(fil)
+    fil_range = fil_range[..., t:-t, t:-t][:, :, None]
+    return fil_range
 
 def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, out_key='flow', loss_fn=None, given_dim=1, do_att_map=True):
     # this could be a lot better in a lot of ways, but it should work for now

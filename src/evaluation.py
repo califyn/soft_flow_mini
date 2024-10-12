@@ -117,7 +117,7 @@ def accumulate_metrics(dataset, model_fwd, cfg=None):
     # start with epe only
     epes = []
     metrics = {'epe': [], 'fl': [], '1px': []} 
-    for name in dataset[0].masks:
+    for name in dataset[0].get_dict("masks"):
         metrics['epe_' + name] = []
         metrics['fl_' + name] = []
         metrics['1px_' + name] = []
@@ -152,7 +152,7 @@ def accumulate_metrics(dataset, model_fwd, cfg=None):
                         metrics['epe'].append(compute_epe(gt, pred).item())
                         metrics['fl'].append(compute_fl(gt, pred).item())
                         metrics['1px'].append(compute_fl(gt, pred, mode='spring').item())
-                        for name, mask in batch.masks.items():
+                        for name, mask in batch.get_dict("masks").items():
                             mask = mask.to(pred.device)
                             metrics['epe_' + name].append(compute_epe(gt, pred, mask=mask).item())
                             metrics['fl_' + name].append(compute_fl(gt, pred, mask=mask).item())
@@ -177,7 +177,7 @@ def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None, warped_fw
         display_keys = ['frame2', 'frame3', 'gt_flow', 'pred_flow', 'diff_flow']
         if len(model_fwd) > 1:
             display_keys += ['pred_flow2', 'diff_flow2', 'diff_between']
-        if "occ" in dataset[0].masks:
+        if "occ" in dataset[0].get_dict("masks"):
             display_keys.append('occ')
         if isinstance(dataset, KITTISuperResDataset):
             display_keys.append('inpaint_gt')
@@ -258,7 +258,7 @@ def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None, warped_fw
             ret[:, 2] = ret[:, 2] - green_vals * green_mask - red_vals * red_mask
             out['diff_between'].append(ret)
         if 'occ' in display_keys:
-            out['occ'].append(batch.masks['occ'].repeat(1, 3, 1, 1))
+            out['occ'].append(batch.get_dict("masks")['occ'].repeat(1, 3, 1, 1))
         if 'fl_pos' in display_keys:
             fl_pos = compute_fl(batch.flow_orig[0], pred_flow, 
                                 scale_to=batch.frames_up[0].shape[2:], 

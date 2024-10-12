@@ -14,78 +14,73 @@ import h5py
 #from featup.train_implicit_upsampler import get_common_pca
 
 class Batch():
-    def __init__(self, frames, frames_up, frames_orig, frames_col, frames_up_col, frames_feat, frames_up_feat, flow, flow_orig, path, masks={}, collate_different_shapes="error", crop_masks={}):
+    def __init__(self, 
+            frames=None, frames_up=None, frames_orig=None, 
+            visible_src=None, visible_tgt=None, 
+            loss_src=None, loss_tgt=None, 
+            flow=None,
+            masks={}, 
+    ):
         self.frames = frames
         self.frames_up = frames_up
         self.frames_orig = frames_orig
-        self.frames_col = frames_col
-        self.frames_up_col = frames_up_col
-        self.frames_feat = frames_feat
-        self.frames_up_feat = frames_up_feat
-        self.flow = flow
-        self.flow_orig = flow_orig
-        self.path = path 
-        self.masks = masks
-        self.collate_different_shapes = collate_different_shapes
-        self.crop_masks = crop_masks
 
-        """
-        print({
-            "frames": [x.mean() for x in self.frames],
-            "frames_up": [x.mean() for x in self.frames_up],
-            "frames_col": [x.mean() for x in self.frames_col],
-            "frames_up_col": [x.mean() for x in self.frames_up_col],
-            "flow": None if self.flow is None else [x.mean() for x in self.flow],
-            "flow_orig": None if self.flow_orig is None else [x.mean() for x in self.flow_orig],
-        })
-        input("?")
-        """
+        self.visible_src = visible_src
+        self.visible_tgt = visible_tgt
+        self.loss_src = loss_src
+        self.loss_tgt = loss_tgt
+
+        self.flow = flow
+
+        if "masks" not in Batch.dict_keys:
+            keys = list(masks.keys())
+            Batch.dict_keys["masks"] = keys
+        self.masks = np.stack([masks[k] for k in Batch.dict_keys["masks"]], dim=-1)
+
+        Batch.stackables = ["frames", 
+                           "frames_up", 
+                           "frames_orig", 
+                           "visible_src", 
+                           "visible_tgt", 
+                           "loss_src", 
+                           "loss_tgt"]
+        Batch.string_stackables = []
+        Batch.optional_stackables = ["flow"]
+        Batch.dictionaries = ["masks"]
+        Batch.dict_keys = {}
 
     def to(self, device):
-        self.frames = [x.to(device) for x in self.frames]
-        self.frames_up = [x.to(device) for x in self.frames_up]
-        self.frames_orig = [x.to(device) for x in self.frames_orig]
-        self.frames_col = [x.to(device) for x in self.frames_col]
-        self.frames_up_col = [x.to(device) for x in self.frames_up_col]
-        self.frames_feat = [x.to(device) for x in self.frames_feat]
-        self.frames_up_feat = [x.to(device) for x in self.frames_up_feat]
-        if self.flow is not None:
-            self.flow = [x.to(device) for x in self.flow]
-        if self.flow_orig is not None:
-            self.flow_orig = [x.to(device) for x in self.flow_orig]
-        for name, mask in self.masks.items():
-            self.masks[name] = self.masks[name].to(device)
+        for attr in Batch.stackables + Batch.dictionaries:
+            setattr(self, attr, getattr(self, attr).to(device))
+
+        for attr in Batch.optional_stackables:
+            if getattr(self, attr, None) is not None:
+                setattr(self, attr, getattr(self, attr).to(device)) 
 
     @staticmethod
     def collate_fn(list_instances): # does NOT support mixing datasets
         assert(list_instances[0].frames[0].ndim == 3)
-        
-        """
-        shapes = [tuple(list(b.frames[0][:2])) for b in list_instances]
-        all_equal_shapes = all([s == shapes[0] for s in shapes])
-        if not all_equal_shapes:
-            handler = list_instances[0].collate_different_shapes
-            if handler == "error":
-                raise ValueError("attempted to collate different shapes")
-            elif handler == "first":
-                list_instances = [l for l, s in zip(list_instances, shapes) if s == shapes[0]]
 
-        """
-        return Batch(
-            [torch.stack([b.frames[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames))],
-            [torch.stack([b.frames_up[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_up))],
-            [torch.stack([b.frames_orig[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_orig))],
-            [torch.stack([b.frames_col[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_col))],
-            [torch.stack([b.frames_up_col[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_up_col))],
-            [torch.stack([b.frames_feat[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_feat))],
-            [torch.stack([b.frames_up_feat[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].frames_up_feat))],
-            None if list_instances[0].flow is None else [torch.stack([b.flow[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].flow))],
-            None if list_instances[0].flow is None else [torch.stack([b.flow_orig[i] for b in list_instances], dim=0) for i in range(len(list_instances[0].flow_orig))],
-            [b.path for b in list_instances],
-            masks={name: torch.stack([b.masks[name] for b in list_instances], dim=0) for name in list_instances[0].masks.keys()},
-            crop_masks={name: torch.stack([b.crop_masks[name] for b in list_instances], dim=0) for name in list_instances[0].crop_masks.keys()},
-        )
+        # Initialize empty batch
+        ret = Batch()
 
+        for attr in Batch.stackables + Batch.dictionaries: 
+            setattr(ret, attr, torch.stack([getattr(b, attr) for b in list_instances], dim=1))
+
+        for attr in Batch.string_stackables:
+            setattr(ret, attr, np.stack([getattr(b, attr) for b in list_instances], dim=1)) # not sure if this will work lol
+
+        for attr in Batch.optional_stackables:
+            if getattr(list_instances[0], attr, None) is not None:
+                setattr(ret, attr, torch.stack([getattr(b, attr) for b in list_instances], dim=1))
+
+    def get_dict(self, attr):
+        data = getattr(self, attr)
+        ret = {k: data[..., i] for i, k in enumerate(Batch.dict_keys[attr])}
+
+        return ret
+
+    """
     @staticmethod
     def index(batch, idx): # Index along the FRAME dimension
         assert(batch.frames[0].ndim == 4)
@@ -106,6 +101,7 @@ class Batch():
             )
         else:
             raise ValueError('idx for batch should be list')
+    """
 
 def load_flow(path):
     if path.endswith(".flo"):
@@ -248,30 +244,8 @@ class SuperResDataset():
             img = img[..., :-image_trim[1], :]
         if image_trim[3] > 0:
             img = img[..., :, :-image_trim[3]]
+
         img = img[..., image_trim[0]:, image_trim[2]:]
-        """
-
-        if image_trim[0] < 0:
-            img = torch.nn.functional.pad(img, (0, 0, -image_trim[0], 0), mode="constant")
-        else image_trim[0] > 0:
-            img = img[:, image_trim[0]:, :]
-
-        if image_trim[1] < 0:
-            img = torch.nn.functional.pad(img, (0, 0, 0, -image_trim[1]), mode="constant")
-        else image_trim[1] > 0:
-            img = img[:, :-image_trim[1], :]
-
-        if image_trim[2] < 0:
-            img = torch.nn.functional.pad(img, (-image_trim[2], 0, 0, 0), mode="constant")
-        else image_trim[2] > 0:
-            img = img[:, :, image_trim[2]:]
-
-        if image_trim[3] < 0:
-            img = torch.nn.functional.pad(img, (0, -image_trim[3], 0, 0), mode="constant")
-        else image_trim[3] > 0:
-            img = img[:, :, :-image_trim[3]]
- 
-        """
         return img
 
     def gen_flow_masks(self, flow_orig, shrink=False):
@@ -407,25 +381,24 @@ class SuperResDataset():
             image_up[i] = transforms.functional.to_tensor(p)
 
         # Color augmentation
-        image_col, image_up_col = [], []
+        visible_src, visible_tgt = [], []
         if self.augmentations.color and not self.is_val:
             for p, q in zip(image, image_up):
                 p_transformed, q_transformed = self._apply_color_transform(p, q)
-                image_col.append(p_transformed)
-                image_up_col.append(q_transformed)
-            #image_col, image_up_col = deepcopy(image), deepcopy(image_up)
+                visible_src.append(p_transformed)
+                visible_tgt.append(q_transformed)
         else:
-            image_col, image_up_col = deepcopy(image), deepcopy(image_up)
+            visible_src, visible_tgt = image, image_up
 
         # Normalize
         for i, p in enumerate(image):
             image[i] = self.transform(p)
         for i, p in enumerate(image_up):
             image_up[i] = self.transform(p)
-        for i, p in enumerate(image_col):
-            image_col[i] = self.transform(p)
-        for i, p in enumerate(image_up_col):
-            image_up_col[i] = self.transform(p)
+        for i, p in enumerate(visible_src):
+            visible_src[i] = self.transform(p)
+        for i, p in enumerate(visible_tgt):
+            visible_tgt[i] = self.transform(p)
 
         masks = self.gen_inverse_masks(masks)
         flow_masks = self.gen_flow_masks(flow_orig)
@@ -433,63 +406,64 @@ class SuperResDataset():
             flow_masks = {k: v[:, ::2, ::2] for k, v in flow_masks.items()}
         masks = masks | flow_masks
         
-        batch = Batch(image, image_up, image_orig, image_col, image_up_col, None, None, flow, flow_orig, frame_paths[1], masks=masks, collate_different_shapes=self.collate_different_shapes_mode)
+        batch = Batch(
+            frames=np.stack(image, dim=0),
+            frames_up=np.stack(image_up, dim=0),
+            frames_orig=np.stack(image_orig, dim=0),
+            visible_src=np.stack(visible_src, dim=0),
+            visible_tgt=np.stack(visible_tgt, dim=0),
+            loss_src=np.stack(image_up, dim=0),
+            loss_tgt=np.stack(image, dim=0),
+            flow=np.stack(flow, dim=0),
+            masks=masks
+        )
         if not self.return_uncropped and self.crop_to is not None:
             batch = self.crop_batch(batch, idx=idx)
 
-        if self.use_feats is not None and self.use_feats != "identity":
-            # Not handling downsampling for now
-            assert(batch.frames[i].shape[-1] == batch.frames_up[i].shape[-1])
-            if self.use_feats != "identity":
-                print(self.use_feats)
-                assert(self.is_overfitting)
-                assert(not self.augmentations.random_crop)
-            if self.img_as_feat is None:
-                self.img_as_feat = []
-                batch.frames_feat = [None] * len(batch.frames)
-                batch.frames_up_feat = [None] * len(batch.frames_up)
-                #unprojector = get_common_pca([x[None].to("cuda") for x in batch.frames])
-                for i, p in enumerate(batch.frames):
-                    #unprojector = get_common_pca([p[None].to("cuda")])
-                    img_as_feat = img_to_feats(p[None].to("cuda"), self.use_feats, save_name=f"blank_{i}")[0].cpu()
-                    #img_as_feat = img_to_feats(p[None].to("cuda"), self.use_feats, save_name=f"blank_{i}", unprojector=unprojector)[0].cpu()
-                    #img_as_feat = torch.cat((img_to_feats(p[None].to("cuda"), self.use_feats, save_name=f"randomunet_{i}")[0].cpu() * 1.25, p), dim=0)
-                    self.img_as_feat.append(torch.Tensor(img_as_feat.detach().cpu().numpy()))
-                """
-                if self.use_feats == "implicit":
-                    #projected = project_pca(torch.stack(self.img_as_feat, dim=0), 16)
-                    #self.img_as_feat = [x[0] for x in torch.chunk(projected, 3, dim=0)]
-                    tens = torch.stack(self.img_as_feat, dim=0)
-                    tens = torch.permute(tens, (1, 0, 2, 3))
-                    tens_shape = tens.shape
-                    tens = torch.reshape(tens, (tens.shape[0], -1))
-                    tens = torch.nn.functional.normalize(tens, dim=0)
-                    tens = torch.reshape(tens, tens_shape)
-                    tens = torch.permute(tens, (1, 0, 2, 3))
+        #if self.use_feats is not None and self.use_feats != "identity":
+        #    # Not handling downsampling for now
+        #    assert(batch.frames[i].shape[-1] == batch.frames_up[i].shape[-1])
+        #    if self.use_feats != "identity":
+        #        print(self.use_feats)
+        #        assert(self.is_overfitting)
+        #        assert(not self.augmentations.random_crop)
+        #    if self.img_as_feat is None:
+        #        self.img_as_feat = []
+        #        batch.frames_feat = [None] * len(batch.frames)
+        #        batch.frames_up_feat = [None] * len(batch.frames_up)
+        #        #unprojector = get_common_pca([x[None].to("cuda") for x in batch.frames])
+        #        for i, p in enumerate(batch.frames):
+        #            #unprojector = get_common_pca([p[None].to("cuda")])
+        #            img_as_feat = img_to_feats(p[None].to("cuda"), self.use_feats, save_name=f"blank_{i}")[0].cpu()
+        #            #img_as_feat = img_to_feats(p[None].to("cuda"), self.use_feats, save_name=f"blank_{i}", unprojector=unprojector)[0].cpu()
+        #            #img_as_feat = torch.cat((img_to_feats(p[None].to("cuda"), self.use_feats, save_name=f"randomunet_{i}")[0].cpu() * 1.25, p), dim=0)
+        #            self.img_as_feat.append(torch.Tensor(img_as_feat.detach().cpu().numpy()))
+        #        """
+        #        if self.use_feats == "implicit":
+        #            #projected = project_pca(torch.stack(self.img_as_feat, dim=0), 16)
+        #            #self.img_as_feat = [x[0] for x in torch.chunk(projected, 3, dim=0)]
+        #            tens = torch.stack(self.img_as_feat, dim=0)
+        #            tens = torch.permute(tens, (1, 0, 2, 3))
+        #            tens_shape = tens.shape
+        #            tens = torch.reshape(tens, (tens.shape[0], -1))
+        #            tens = torch.nn.functional.normalize(tens, dim=0)
+        #            tens = torch.reshape(tens, tens_shape)
+        #            tens = torch.permute(tens, (1, 0, 2, 3))
 
-                    self.img_as_feat = [x[0] * 50. for x in torch.chunk(tens, 3, dim=0)]
-                    print("normalized:", [x.mean() for x in self.img_as_feat], [x.min() for x in self.img_as_feat], [x.max() for x in self.img_as_feat])
-                """
-            batch.frames_feat = deepcopy(self.img_as_feat)
-            batch.frames_up_feat = deepcopy(self.img_as_feat)
-        else:
-            batch.frames_feat = deepcopy(batch.frames)
-            batch.frames_up_feat = deepcopy(batch.frames_up)
+        #            self.img_as_feat = [x[0] * 50. for x in torch.chunk(tens, 3, dim=0)]
+        #            print("normalized:", [x.mean() for x in self.img_as_feat], [x.min() for x in self.img_as_feat], [x.max() for x in self.img_as_feat])
+        #        """
+        #    batch.frames_feat = deepcopy(self.img_as_feat)
+        #    batch.frames_up_feat = deepcopy(self.img_as_feat)
+        #else:
+        #    batch.frames_feat = deepcopy(batch.frames)
+        #    batch.frames_up_feat = deepcopy(batch.frames_up)
 
-        """
-        if self.augmentations.color:
-            assert(self.use_feats == "identity")
-            for i, (p, q) in enumerate(zip(batch.frames, batch.frames_up)):
-                p_transformed, q_transformed = self._apply_color_transform(p, q)
-                batch.frames_feat[i] = p_transformed
-                batch.frames_up_feat[i] = q_transformed
-        """
         if self.augmentations.mask and not self.is_val:
-            assert(self.use_feats == "identity")
-            for i, (p, q) in enumerate(zip(batch.frames_feat, batch.frames_up_feat)):
+            for i, (p, q) in enumerate(zip(batch.visible_src, batch.visible_tgt)):
                 if i == 1:
                     p_transformed, q_transformed = self._apply_mask_transform(p, q)
-                    batch.frames_feat[i] = p_transformed
-                    batch.frames_up_feat[i] = q_transformed
+                    batch.visible_src[i] = p_transformed
+                    batch.visible_tgt[i] = q_transformed
          
         return batch

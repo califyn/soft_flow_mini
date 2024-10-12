@@ -79,14 +79,15 @@ def spatial_smoothness_loss(weights, image=None, occ_mask=None, edge_weight=1.0)
 
     return loss
 
-def position_spat_smoothness(positions, image=None, edge_weight=1.0):
+def position_spat_smoothness(positions, image=None, edge_weight=1.0, degree=1):
     # Calculate the gradient along the height and width dimensions
-    grad_height = positions[:, :, 1:, :, :] - positions[:, :, :-1, :, :]
-    grad_width = positions[:, :, :, 1:, :] - positions[:, :, :, :-1, :]
+    grad_height = positions[:, :, :, 1:, :] - positions[:, :, :, :-1, :]
+    grad_width = positions[:, :, :, :, 1:] - positions[:, :, :, :, :-1]
 
     # second derivative ? 
-    grad_height = grad_height[:, :, 1:, :, :] - grad_height[:, :, :-1, :, :]
-    grad_width = grad_width[:, :, :, 1:, :] - grad_width[:, :, :, :-1, :]
+    if degree == 2:
+        grad_height = grad_height[:, :, :, 1:, :] - grad_height[:, :, :, :-1, :]
+        grad_width = grad_width[:, :, :, :, 1:] - grad_width[:, :, :, :, :-1]
 
     # Edgeaware
     if image is not None:
@@ -94,19 +95,13 @@ def position_spat_smoothness(positions, image=None, edge_weight=1.0):
         image_grad_y = image[:, :, :, 1:, :] - image[:, :, :, :-1, :]
         image_grad_x = image[:, :, :, :, 1:] - image[:, :, :, :, :-1]
     else:
-        image_grad_y = torch.zeros_like(grad_height)[:, :, None, ..., 0, 0] # reduce by one dim
-        image_grad_x = torch.zeros_like(grad_width)[:, :, None, ..., 0, 0]
+        image_grad_y = torch.zeros_like(grad_height)
+        image_grad_x = torch.zeros_like(grad_width)
     grad_height = torch.exp(-edge_weight * torch.mean(torch.abs(image_grad_y), dim=2)[..., None])
     grad_width = torch.exp(-edge_weight * torch.mean(torch.abs(image_grad_x), dim=2)[..., None])
 
-    # You can use either the L1 or L2 norm for the gradients.
-    # L1 norm (absolute differences)
     loss_height = torch.abs(grad_height).mean()
     loss_width = torch.abs(grad_width).mean()
-
-    # Alternatively, you could use the L2 norm (squared differences)
-    # loss_height = (grad_height ** 2).mean()
-    # loss_width = (grad_width ** 2).mean()
 
     # Combine the losses along both dimensions
     loss = loss_height + loss_width
