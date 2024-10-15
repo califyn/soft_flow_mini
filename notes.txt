@@ -10,3 +10,5 @@ current lowest .276 with occ: 7218974858176726
 one sided: 7678649213571033
 
 new base 150.0 smooth pretrain: 7938800175818207
+
+crop_mild: 8366944971921601 (best one sided so far)

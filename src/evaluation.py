@@ -91,7 +91,7 @@ def compute_fl(gt, pred, scale_to=None, mask=None, reduce=True, mode='kitti'):
         return torch.nan_to_num(fl)
 
 def upsampled_flow_match(gt, pred):
-    gt = (gt / 2).to(pred.device)
+    gt = gt / 2
     gt = torch.reshape(gt, (gt.shape[0], 2, gt.shape[2]//2, 2, gt.shape[3]//2, 2))
     gt = torch.permute(gt, (0, 1, 2, 4, 3, 5))
     gt = torch.reshape(gt, (*gt.shape[:-2], 4))
@@ -139,15 +139,14 @@ def accumulate_metrics(dataset, model_fwd, cfg=None):
                     if j < i:
                         j = j + 1
                         continue
-                    gt = batch.flow_orig[0]
+                    gt = batch.flow[0]
                     pred = model_fwd(batch)
                     if pred.shape[1] != 2:
                         metrics[primary_metric].append(0.)
                     else:
+                        gt = torch.Tensor(gt).to(pred.device)
                         if isinstance(dataset, SpringSuperResDataset):
                             gt = upsampled_flow_match(gt, pred)
-                        else:
-                            gt = gt.to(pred.device)
             
                         metrics['epe'].append(compute_epe(gt, pred).item())
                         metrics['fl'].append(compute_fl(gt, pred).item())
@@ -185,6 +184,7 @@ def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None, warped_fw
         if warped_fwd is not None:
             display_keys += ['warped_f2', 'warped_f2_diff']
     out = {key: [] for key in display_keys}
+
     for i in sample_idxs:
         with torch.no_grad():
             batch = Batch.collate_fn([dataset[i]])
@@ -196,16 +196,16 @@ def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None, warped_fw
         if 'frame3' in display_keys:
             out['frame3'].append(batch.frames_orig[2])
         if 'gt_flow' in display_keys:
-            out['gt_flow'].append(flow_to_image(torch.nan_to_num(batch.flow_orig[0])))
+            out['gt_flow'].append(flow_to_image(torch.nan_to_num(batch.flow[0])))
         if 'inpaint_gt' in display_keys:
-            points = torch.nonzero(torch.logical_not(torch.isnan(torch.sum(batch.flow_orig[0], dim=1, keepdim=True)))).cpu().numpy()[:, 2:]
+            points = torch.nonzero(torch.logical_not(torch.isnan(torch.sum(batch.flow[0], dim=1, keepdim=True)))).cpu().numpy()[:, 2:]
             points = np.flip(points, -1)
-            values = batch.flow_orig[0][0, 0, points[:, 1], points[:, 0]].cpu().numpy()
+            values = batch.flow[0][0, 0, points[:, 1], points[:, 0]].cpu().numpy()
             interpolator = LinearNDInterpolator(points, values, fill_value=0.)
-            h_inpainted = interpolator(*np.meshgrid(np.arange(0, batch.flow_orig[0].shape[3]), np.arange(0, batch.flow_orig[0].shape[2])))
-            values = batch.flow_orig[0][0, 1, points[:, 1], points[:, 0]].cpu().numpy()
+            h_inpainted = interpolator(*np.meshgrid(np.arange(0, batch.flow[0].shape[3]), np.arange(0, batch.flow[0].shape[2])))
+            values = batch.flow[0][0, 1, points[:, 1], points[:, 0]].cpu().numpy()
             interpolator = LinearNDInterpolator(points, values, fill_value=0.)
-            w_inpainted = interpolator(*np.meshgrid(np.arange(0, batch.flow_orig[0].shape[3]), np.arange(0, batch.flow_orig[0].shape[2])))
+            w_inpainted = interpolator(*np.meshgrid(np.arange(0, batch.flow[0].shape[3]), np.arange(0, batch.flow[0].shape[2])))
 
             inpainted_flow = torch.stack((torch.Tensor(h_inpainted), torch.Tensor(w_inpainted)), dim=0)[None]
             out['inpaint_gt'].append(flow_to_image(inpainted_flow))
@@ -227,18 +227,18 @@ def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None, warped_fw
             out['pred_flow2'].append(flow_to_image(pred_flow[1]))
         if 'diff_flow' in display_keys:
             if isinstance(dataset, SpringSuperResDataset):
-                out['diff_flow'].append(flow_to_image(torch.nan_to_num(pred_flow[0] - upsampled_flow_match(batch.flow_orig[0], pred_flow[0]))))
+                out['diff_flow'].append(flow_to_image(torch.nan_to_num(pred_flow[0] - upsampled_flow_match(batch.flow[0], pred_flow[0]))))
             else:
-                out['diff_flow'].append(flow_to_image(torch.nan_to_num(pred_flow[0] - batch.flow_orig[0].to(pred_flow[0].device))))
+                out['diff_flow'].append(flow_to_image(torch.nan_to_num(pred_flow[0] - batch.flow[0].to(pred_flow[0].device))))
         if 'diff_flow2' in display_keys:
             if isinstance(dataset, SpringSuperResDataset):
-                out['diff_flow2'].append(flow_to_image(torch.nan_to_num(pred_flow[1] - upsampled_flow_match(batch.flow_orig[0], pred_flow[1]))))
+                out['diff_flow2'].append(flow_to_image(torch.nan_to_num(pred_flow[1] - upsampled_flow_match(batch.flow[0], pred_flow[1]))))
             else:
-                out['diff_flow2'].append(flow_to_image(torch.nan_to_num(pred_flow[1] - batch.flow_orig[0].to(pred_flow[1].device))))
+                out['diff_flow2'].append(flow_to_image(torch.nan_to_num(pred_flow[1] - batch.flow[0].to(pred_flow[1].device))))
         if 'diff_between' in display_keys:
             #out['diff_between'].append(flow_to_image(pred_flow[0] - pred_flow[1]))
-            error_1 = torch.linalg.norm(pred_flow[0] - batch.flow_orig[0], dim=1, keepdim=True)
-            error_2 = torch.linalg.norm(pred_flow[1] - batch.flow_orig[0], dim=1, keepdim=True)
+            error_1 = torch.linalg.norm(pred_flow[0] - batch.flow[0], dim=1, keepdim=True)
+            error_2 = torch.linalg.norm(pred_flow[1] - batch.flow[0], dim=1, keepdim=True)
             error_2 = torch.clamp(error_2, min=1e-10)
 
             #ratio = error_1 / error_2
@@ -258,9 +258,10 @@ def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None, warped_fw
             ret[:, 2] = ret[:, 2] - green_vals * green_mask - red_vals * red_mask
             out['diff_between'].append(ret)
         if 'occ' in display_keys:
+            print(batch.get_dict("masks")) # empty
             out['occ'].append(batch.get_dict("masks")['occ'].repeat(1, 3, 1, 1))
         if 'fl_pos' in display_keys:
-            fl_pos = compute_fl(batch.flow_orig[0], pred_flow, 
+            fl_pos = compute_fl(batch.flow[0], pred_flow, 
                                 scale_to=batch.frames_up[0].shape[2:], 
                                 reduce=False)
             out['fl_pos'].append(fl_pos.repeat(1, 3, 1, 1))

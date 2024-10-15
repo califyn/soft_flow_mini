@@ -245,13 +245,13 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, o
             
             if out_key == 'flow':
                 out_flow = model(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
-                out_flow = out_flow["positions"][:, 0].permute(0, 3, 1, 2).float()
+                out_flow = out_flow["flow"][:, 0]
             elif out_key == 'pred_occ_mask':
                 out = model(cropped_batch, temp=temp, src_idx=[1], tgt_idx=[2])
                 if out["pred_occ_mask"] is not None:
                     out_flow = 1. - out["pred_occ_mask"][:, 0].float()
                 else:
-                    out_flow = torch.ones((out["positions"].shape[0], 1, out["positions"].shape[2], out["positions"].shape[3])).to(out["positions"].device)
+                    out_flow = torch.ones((out["flow"].shape[0], 1, out["flow"].shape[2], out["flow"].shape[3])).to(out["flow"].device)
                 if model.border_handling in ["pad_feats", "fourth_channel"]:
                     out_border = model(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
                     border_weights = out_border["out"][:, 0, -1, None].detach()

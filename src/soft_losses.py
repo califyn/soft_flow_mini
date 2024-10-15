@@ -1,6 +1,6 @@
 import torch.distributions as dist
 import torch
-from .soft_utils import warp_previous_flow, pad_for_filter, transpose_filter, downsample_filter
+from .soft_utils import warp_previous_flow, pad_for_filter, downsample_filter
 from tqdm import tqdm
 
 def entropy_loss(weight_softmax):

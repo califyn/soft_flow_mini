@@ -32,30 +32,21 @@ class Batch():
 
         self.flow = flow
 
-        if "masks" not in Batch.dict_keys:
+        if "masks" not in Batch.dict_keys or len(Batch.dict_keys["masks"]) == 0:
             keys = list(masks.keys())
             Batch.dict_keys["masks"] = keys
-        self.masks = np.stack([masks[k] for k in Batch.dict_keys["masks"]], dim=-1)
-
-        Batch.stackables = ["frames", 
-                           "frames_up", 
-                           "frames_orig", 
-                           "visible_src", 
-                           "visible_tgt", 
-                           "loss_src", 
-                           "loss_tgt"]
-        Batch.string_stackables = []
-        Batch.optional_stackables = ["flow"]
-        Batch.dictionaries = ["masks"]
-        Batch.dict_keys = {}
+        if len(Batch.dict_keys["masks"]) > 0 and len(masks) > 0:
+            self.masks = np.stack([masks[k] for k in Batch.dict_keys["masks"]], axis=-1)
+        else:
+            self.masks = None
 
     def to(self, device):
         for attr in Batch.stackables + Batch.dictionaries:
-            setattr(self, attr, getattr(self, attr).to(device))
+            setattr(self, attr, torch.Tensor(getattr(self, attr)).to(device))
 
         for attr in Batch.optional_stackables:
             if getattr(self, attr, None) is not None:
-                setattr(self, attr, getattr(self, attr).to(device)) 
+                setattr(self, attr, torch.Tensor(getattr(self, attr)).to(device))
 
     @staticmethod
     def collate_fn(list_instances): # does NOT support mixing datasets
@@ -64,18 +55,26 @@ class Batch():
         # Initialize empty batch
         ret = Batch()
 
-        for attr in Batch.stackables + Batch.dictionaries: 
-            setattr(ret, attr, torch.stack([getattr(b, attr) for b in list_instances], dim=1))
+        for attr in Batch.stackables: 
+            setattr(ret, attr, np.stack([getattr(b, attr) for b in list_instances], axis=1))
+
+        print(list_instances[0].masks.shape, "lshape")
+        for attr in Batch.dictionaries: 
+            setattr(ret, attr, np.stack([getattr(b, attr) for b in list_instances], axis=0))
+        print(ret.masks.shape, "retshape")
 
         for attr in Batch.string_stackables:
-            setattr(ret, attr, np.stack([getattr(b, attr) for b in list_instances], dim=1)) # not sure if this will work lol
+            setattr(ret, attr, np.stack([getattr(b, attr) for b in list_instances], axis=1)) # not sure if this will work lol
 
         for attr in Batch.optional_stackables:
             if getattr(list_instances[0], attr, None) is not None:
-                setattr(ret, attr, torch.stack([getattr(b, attr) for b in list_instances], dim=1))
+                setattr(ret, attr, np.stack([getattr(b, attr) for b in list_instances], axis=1))
+
+        return ret
 
     def get_dict(self, attr):
         data = getattr(self, attr)
+        print(data.shape, "dshape", Batch.dict_keys[attr])
         ret = {k: data[..., i] for i, k in enumerate(Batch.dict_keys[attr])}
 
         return ret
@@ -102,6 +101,19 @@ class Batch():
         else:
             raise ValueError('idx for batch should be list')
     """
+
+# Enumerate attrs
+Batch.stackables = ["frames", 
+                   "frames_up", 
+                   "frames_orig", 
+                   "visible_src", 
+                   "visible_tgt", 
+                   "loss_src", 
+                   "loss_tgt"]
+Batch.string_stackables = []
+Batch.optional_stackables = ["flow"]
+Batch.dictionaries = ["masks"]
+Batch.dict_keys = {}
 
 def load_flow(path):
     if path.endswith(".flo"):
@@ -211,7 +223,10 @@ class SuperResDataset():
         transformed_imgs = []
         for img in imgs:
             img = deepcopy(img)
-            img[..., x1:x2, y1:y2] = torch.zeros_like(img[..., x1:x2, y1:y2]) # is this ok to mask
+            if isinstance(img, torch.Tensor):
+                img[..., x1:x2, y1:y2] = torch.zeros_like(img[..., x1:x2, y1:y2]) # is this ok to mask
+            else:
+                img[..., x1:x2, y1:y2] = np.zeros_like(img[..., x1:x2, y1:y2]) # is this ok to mask
             transformed_imgs.append(img)
 
         return transformed_imgs
@@ -285,29 +300,27 @@ class SuperResDataset():
            x1, x2, y1, y2 = crop
         
         up_ratio = batch.frames_up[0].shape[2] // batch.frames[0].shape[2]
-        for i, p in enumerate(batch.frames):
-            batch.frames[i] = self.crop(p, [x1, x2, y1, y2])
-        for i, p in enumerate(batch.frames_up):
-            batch.frames_up[i] = self.crop(p, [x1 * up_ratio, x2 * up_ratio, y1 * up_ratio, y2 * up_ratio])
-        for i, p in enumerate(batch.frames_col):
-            batch.frames_col[i] = self.crop(p, [x1, x2, y1, y2])
-        for i, p in enumerate(batch.frames_up_col):
-            batch.frames_up_col[i] = self.crop(p, [x1 * up_ratio, x2 * up_ratio, y1 * up_ratio, y2 * up_ratio])
-        if batch.frames_feat is not None:
-            for i, p in enumerate(batch.frames_feat):
-                batch.frames_feat[i] = self.crop(p, [x1, x2, y1, y2])
-            for i, p in enumerate(batch.frames_up_feat):
-                batch.frames_up_feat[i] = self.crop(p, [x1 * up_ratio, x2 * up_ratio, y1 * up_ratio, y2 * up_ratio])
-        for i, p in enumerate(batch.flow):
-            batch.flow[i] = self.crop(p, [x1, x2, y1, y2])
-        up_ratio *= self.imsz_super_res
-        for i, p in enumerate(batch.flow_orig):
-            batch.flow_orig[i] = self.crop(p, [x1 * up_ratio + self.image_trim[2], x2 * up_ratio + self.image_trim[3], y1 * up_ratio + self.image_trim[0], y2 * up_ratio + self.image_trim[1]])
+        batch.frames = self.crop(batch.frames, [x1, x2, y1, y2])
+        batch.frames_up = self.crop(batch.frames_up, [x1 * up_ratio, x2 * up_ratio, y1 * up_ratio, y2 * up_ratio])
+        batch.visible_src = self.crop(batch.visible_src, [x1 * up_ratio, x2 * up_ratio, y1 * up_ratio, y2 * up_ratio])
+        batch.visible_tgt = self.crop(batch.visible_tgt, [x1, x2, y1, y2])
+        batch.loss_src = self.crop(batch.loss_src, [x1 * up_ratio, x2 * up_ratio, y1 * up_ratio, y2 * up_ratio])
+        batch.loss_tgt = self.crop(batch.loss_tgt, [x1, x2, y1, y2])
+        if batch.flow is not None:
+            batch.flow = self.crop(batch.flow, [x1, x2, y1, y2])
 
-        batch.crop_masks = {}
-        for k, v in batch.masks.items():
-            assert(up_ratio == 1)
-            batch.crop_masks[k] = self.crop(v, [x1, x2, y1, y2])
+        # Unused parameters
+        #up_ratio *= self.imsz_super_res
+        #for i, p in enumerate(batch.flow_orig):
+        #    batch.flow_orig[i] = self.crop(p, [x1 * up_ratio + self.image_trim[2], x2 * up_ratio + self.image_trim[3], y1 * up_ratio + self.image_trim[0], y2 * up_ratio + self.image_trim[1]])
+        crop_masks = []
+        for i in range(batch.masks.shape[-1]):
+            crop_masks.append(self.crop(batch.masks[..., i], [x1, x2, y1, y2]))
+        if isinstance(batch.masks, torch.Tensor):
+            batch.masks = torch.stack(crop_masks, axis=-1)
+        else:
+            batch.masks = np.stack(crop_masks, axis=-1)
+
         return batch
 
     def __getitem__(self, idx):
@@ -407,14 +420,14 @@ class SuperResDataset():
         masks = masks | flow_masks
         
         batch = Batch(
-            frames=np.stack(image, dim=0),
-            frames_up=np.stack(image_up, dim=0),
-            frames_orig=np.stack(image_orig, dim=0),
-            visible_src=np.stack(visible_src, dim=0),
-            visible_tgt=np.stack(visible_tgt, dim=0),
-            loss_src=np.stack(image_up, dim=0),
-            loss_tgt=np.stack(image, dim=0),
-            flow=np.stack(flow, dim=0),
+            frames=np.stack(image, axis=0),
+            frames_up=np.stack(image_up, axis=0),
+            frames_orig=np.stack(image_orig, axis=0),
+            visible_src=np.stack(visible_src, axis=0),
+            visible_tgt=np.stack(visible_tgt, axis=0),
+            loss_src=np.stack(image_up, axis=0),
+            loss_tgt=np.stack(image, axis=0),
+            flow=np.stack(flow, axis=0),
             masks=masks
         )
         if not self.return_uncropped and self.crop_to is not None:
