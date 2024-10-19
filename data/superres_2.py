@@ -395,7 +395,7 @@ class SuperResDataset():
                 visible_src.append(p_transformed)
                 visible_tgt.append(q_transformed)
         else:
-            visible_src, visible_tgt = deepcopy(image), deepcopy(image_up)
+            visible_src, visible_tgt = image, image_up
 
         # Normalize
         for i, p in enumerate(image):

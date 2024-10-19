@@ -102,10 +102,10 @@ def pad_for_filter(in_frames, weight_sl, downsample_factor, border_fourth_channe
 
             in_frames_fourth = in_frames.new_ones(tuple(in_shape_fourth))
 
-        in_frames_reshaped = torch.reshape(in_frames, (in_frames.shape[0] * in_frames.shape[1], in_frames.shape[2], in_frames.shape[3], in_frames.shape[4]))
+        in_frames_reshaped = torch.reshape(in_frames, (in_frames.shape[0] * in_frames.shape[1], *in_frames.shape[2:]))
         x_padded = F.pad(in_frames_reshaped, (t, t, t, t), mode='replicate')
         if border_fourth_channel:
-            in_frames_fourth_reshaped = torch.reshape(in_frames_fourth, (in_frames_fourth.shape[0] * in_frames_fourth.shape[1], in_frames_fourth.shape[2], in_frames_fourth.shape[3], in_frames_fourth.shape[4]))
+            in_frames_fourth_reshaped = torch.reshape(in_frames_fourth, (in_frames_fourth.shape[0] * in_frames_fourth.shape[1], *in_frames_fourth.shape[2:]))
             x_padded_fourth = F.pad(in_frames_fourth_reshaped, (t, t, t, t), mode='constant', value=0)
             x_padded = torch.cat((x_padded, x_padded_fourth), dim=1)
         x_padded = torch.reshape(x_padded, (in_shape[0], in_shape[1], *x_padded.shape[1:]))
@@ -255,10 +255,8 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, o
                 if model.border_handling in ["pad_feats", "fourth_channel"]:
                     out_border = model(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
                     border_weights = out_border["out"][:, 0, -1, None].detach()
-                    #border_weights = 1. - torch.gt(border_weights, torch.Tensor([0.5]).to(border_weights.device)).float()
                     border_weights = torch.gt(border_weights, torch.Tensor([0.5]).to(border_weights.device)).float()
-                    #print(out_flow.shape, border_weights.shape, out_flow.dtype, border_weights.dtype, out_flow[..., :5, :5], border_weights[..., :5, :5], (out_flow * border_weights)[..., :5, :5])
-                    out_flow = out_flow * border_weights # border weights mean is 0.027
+                    out_flow = out_flow * border_weights
             elif out_key == 'given':
                out_flow = model(cropped_batch)
             out_flow = get_estimate_fn(out_flow)
@@ -289,128 +287,3 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, o
         """
 
     return estimate
-
-# tiled prediction, taken from Croco v2
-# https://github.com/naver/croco/blob/master/stereoflow/engine.py#L179 
-# edit: not using this for now, it's a bit too unwieldy/unpredictable
-@torch.no_grad()
-def other_tiled_pred(model, criterion, batch,
-               overlap=0.5, crop=(224, 224), temp=9,
-               conf_mode='conf_expsigmoid_10_5', with_conf=False, 
-               return_time=False):
-    if batch.uncropped_batch is not None:
-        batch = batch.uncropped_batch
-    
-    # for each image, we are going to run inference on many overlapping patches
-    # then, all predictions will be weighted-averaged
-    if batch.flow is not None:
-        B, C, H, W = batch.flow[0].shape
-    else:
-        B, _, H, W = batch.frames[1].shape
-        C = model.head.num_channels-int(with_conf)
-    win_height, win_width = crop[0], crop[1]
-    
-    # upscale to be larger than the crop
-    do_change_scale =  H<win_height or W<win_width
-    if do_change_scale: 
-        raise ValueError("Image cannot be smaller than the crop")
-        """
-        upscale_factor = max(win_width/W, win_height/W)
-        original_size = (H,W)
-        new_size = (round(H*upscale_factor),round(W*upscale_factor))
-        img1 = _resize_img(img1, new_size)
-        img2 = _resize_img(img2, new_size)
-        # resize gt just for the computation of tiled losses
-        if batch.flow[0] is not None: batch.flow[0] = _resize_stereo_or_flow(batch.f, new_size)
-        H,W = img1.shape[2:4]
-        """
-        
-    if conf_mode.startswith('conf_expsigmoid_'): # conf_expsigmoid_30_10
-        beta, betasigmoid = map(float, conf_mode[len('conf_expsigmoid_'):].split('_'))
-    elif conf_mode.startswith('conf_expbeta'): # conf_expbeta3
-        beta = float(conf_mode[len('conf_expbeta'):])
-    else:
-        raise NotImplementedError(f"conf_mode {conf_mode} is not implemented")
-
-    def crop_generator():
-        for sy in _overlapping(H, win_height, overlap):
-          for sx in _overlapping(W, win_width, overlap):
-            yield sy, sx, sy, sx, True
-
-    # keep track of weighted sum of prediction*weights and weights
-    accu_pred = batch.frames[1].new_zeros((B, C, H, W)) # accumulate the weighted sum of predictions 
-    accu_conf = batch.frames[1].new_zeros((B, H, W)) + 1e-16 # accumulate the weights 
-    accu_c = batch.frames[1].new_zeros((B, H, W)) # accumulate the weighted sum of confidences ; not so useful except for computing some losses
-
-    tiled_losses = []
-    
-    if return_time:
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-
-    for sy1, sx1, sy2, sx2, aligned in crop_generator():
-        # compute optical flow there
-        cropped_batch = deepcopy(batch)
-        """
-        cropped_batch.frames[0] = _crop(batch.frames[0],sy1,sx1) # we don't need this, but just for model internals to work
-        cropped_batch.frames[1] = _crop(batch.frames[1],sy1,sx1)
-        cropped_batch.frames[2] = _crop(batch.frames[2],sy2,sx2)
-        """
-        pred =  model(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
-        pred = pred["positions"][:, 0].permute(0, 3, 1, 2).float()
-        #pred, predconf = split_prediction_conf(pred, with_conf=with_conf)
-        predconf = None
-        
-        if batch.flow is not None: gtcrop = _crop(batch.flow[0],sy1,sx1)
-        if criterion is not None and batch.flow is not None: 
-            tiled_losses.append( criterion(pred, gtcrop).item() if predconf is None else criterion(pred, gtcrop, predconf).item() )
-        
-        if predconf is not None:
-            if conf_mode.startswith('conf_expsigmoid_'):
-                conf = torch.exp(- beta * 2 * (torch.sigmoid(predconf / betasigmoid) - 0.5)).view(B,win_height,win_width)
-            elif conf_mode.startswith('conf_expbeta'):
-                conf = torch.exp(- beta * predconf).view(B,win_height,win_width)
-            else:
-                raise NotImplementedError
-        else:
-            conf = torch.ones((B, win_height, win_width)).to(pred.device)
-                        
-        accu_pred[...,sy1,sx1] += pred * conf[:,None,:,:]
-        accu_conf[...,sy1,sx1] += conf
-        if predconf is not None:
-            accu_c[...,sy1,sx1] += predconf.view(B,win_height,win_width) * conf 
-        else:
-            accu_c[...,sy1,sx1] += conf 
-        
-    pred = accu_pred / accu_conf[:, None,:,:]
-    c = accu_c / accu_conf
-    assert not torch.any(torch.isnan(pred))
-
-    if return_time:
-        end.record()
-        torch.cuda.synchronize()
-        time = start.elapsed_time(end)/1000.0 # this was in milliseconds
-
-    if do_change_scale:
-        pred = _resize_stereo_or_flow(pred, original_size)
-    
-    if return_time:
-        return pred, torch.mean(torch.tensor(tiled_losses)), c, time
-    return pred, torch.mean(torch.tensor(tiled_losses)), c
-
-
-def _overlapping(total, window, overlap=0.5):
-    assert total >= window and 0 <= overlap < 1, (total, window, overlap)
-    num_windows = 1 + int(np.ceil( (total - window) / ((1-overlap) * window) ))
-    offsets = np.linspace(0, total-window, num_windows).round().astype(int)
-    yield from (slice(x, x+window) for x in offsets)
-
-def _crop(img, sy, sx):
-    B, THREE, H, W = img.shape
-    if 0 <= sy.start and sy.stop <= H and 0 <= sx.start and sx.stop <= W:
-        return img[:,:,sy,sx]
-    l, r = max(0,-sx.start), max(0,sx.stop-W)
-    t, b = max(0,-sy.start), max(0,sy.stop-H)
-    img = torch.nn.functional.pad(img, (l,r,t,b), mode='constant')
-    return img[:, :, slice(sy.start+t,sy.stop+t), slice(sx.start+l,sx.stop+l)]

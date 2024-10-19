@@ -19,7 +19,6 @@ from .soft_utils import *
 from .softsplat_downsample import softsplat
 from src import eigenutils
 from .unet import HalfUnet, Unet
-#from data.superres import Batch
 
 from models.croco import CroCoNet
 from models.croco_downstream import croco_args_from_ckpt, CroCoDownstreamBinocular
@@ -218,7 +217,8 @@ class SoftMultiFramePredictor(torch.nn.Module):
         pred_occ_mask = None
         if weights is None:
             if self.method == 'weights':
-                weights = self.weights[:, src_idx, None]
+                weights = self.weights
+                neighbor_diff_x, neighbor_diff_y = 0., 0.
             elif self.method == 'feats' or self.method == 'nn':
                 if self.method == 'feats' and self.border_handling == 'pad_feats':
                     raise ValueError("pad_feats border handling not supported for non-NN weight methods yet") 
@@ -256,7 +256,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
         expected_positions = torch.einsum('bnijkl,klm->bnijm', weights, grid) / self.downsample_factor
 
         expected_positions = torch.permute(expected_positions, (0, 1, 4, 2, 3))
-        expected_positions = expected_positions.flip(-1)
+        expected_positions = expected_positions.flip(2)
 
         return {
                     'out':out, 
@@ -350,7 +350,8 @@ class OverfitSoftLearner(L.LightningModule):
                 #temp_smooth_reg = temporal_smoothness_loss(outputs['flow'][:, 0] * occ_weights[:, 0], r=None, flow_fields_b=outputs['positions'][:, 1].detach() * occ_weights[:, 0])
                 #temp_smooth_reg += temporal_smoothness_loss(outputs['positions'][:, 1] * occ_weights[:, 1], r=None, flow_fields_b=outputs['positions'][:, 0].detach() * occ_weights[:, 1])
                 #temp_smooth_reg *= 0.5
-                temp_smooth_reg += temporal_smoothness_loss(outputs['flow'] * occ_weights, r=None, flow_fields_b=(outputs['flow'].detach() * occ_weights).flip(1))
+                temp_smooth_reg = temporal_smoothness_loss(outputs['flow'] * occ_weights, r=None, flow_fields_b=(outputs['flow'].detach() * occ_weights).flip(1))
+                # ^^ May not work yet
             else:
                 temp_smooth_reg = temporal_smoothness_loss(outputs['flow'], r=None)
             loss += self.cfg.model.temp_smoothness * temp_smooth_reg
@@ -502,6 +503,8 @@ class OverfitSoftLearner(L.LightningModule):
             fwd_flow = outputs["flow"][:, 0]
             if self.inference_mode in ["three_frames", "bisided"]:
                 bwd_flow = outputs["flow"][:, 1]
+            else:
+                bwd_flow = None
             gt_flow = batch.flow[0]
 
             loss = self.loss(outputs, occ_mask=None)
@@ -551,7 +554,10 @@ class OverfitSoftLearner(L.LightningModule):
             batch_scale = torch.max(batch.frames[1])
             fwd_flows = torchvision.utils.flow_to_image(fwd_flow) / 255 * batch_scale
             fwd_flows_100 = torchvision.utils.flow_to_image(outputs_100["flow"][:, 0]) / 255 * batch_scale
-            bwd_flows = torchvision.utils.flow_to_image(bwd_flow) / 255 * batch_scale
+            if bwd_flow is not None:
+                bwd_flows = torchvision.utils.flow_to_image(bwd_flow) / 255 * batch_scale
+            else:
+                bwd_flows = torchvision.utils.flow_to_image(torch.zeros_like(fwd_flow)) / 255 * batch_scale
             gt_flows = torchvision.utils.flow_to_image(torch.nan_to_num(gt_flow)) / 255 * batch_scale
             diff_flows = torchvision.utils.flow_to_image(torch.nan_to_num(fwd_flow - gt_flow)) / 255 * batch_scale
             raft_pred = torchvision.utils.flow_to_image(raft_pred) / 255 * batch_scale
@@ -580,16 +586,16 @@ class OverfitSoftLearner(L.LightningModule):
                 occ_mask_vis = torch.zeros_like(gt_flow[:, 0, None]).repeat(1, 3, 1, 1)
 
             # Log images
-            self.logger.log_image(key='fwd_flow', images=self.chunk(fwd_flow), step=self.global_step) # f2, f3, then predicted forward flow from soft flows
-            self.logger.log_image(key='fwd_warped', images=self.chunk(fwd_warped), step=self.global_step) # f2, f3, then the output of the soft flow (i.e. f3 mapped to f2)
-            self.logger.log_image(key='gt_fwd_flow', images=self.chunk(gt_fwd), step=self.global_step) # gt forward flow (downscaled), predicted flow
-            self.logger.log_image(key='gt_fwd_flow_100', images=self.chunk(gt_fwd_100), step=self.global_step) # gt forward flow (downscaled), predicted flow
-            self.logger.log_image(key='gt_raft', images=self.chunk(gt_fwd_raft), step=self.global_step) # gt forward flow (downscaled), RAFT output with downscaled inputs
-            self.logger.log_image(key='gt_smurf', images=self.chunk(gt_fwd_smurf), step=self.global_step) # gt forward flow (downscaled), RAFT output with downscaled inputs
-            self.logger.log_image(key='diff_flow', images=self.chunk(diff_flows), step=self.global_step) # take the difference between predicted flow and gt, and visualize (this is another flow)
-            self.logger.log_image(key='filters', images=self.chunk(filters), step=self.global_step) # visualizing the filters inside the soft flow (1 filter shown per 32x32 pixels)
-            self.logger.log_image(key='occ_mask', images=self.chunk(occ_mask_vis), step=self.global_step) # grayscale image of the expected norm of the flow
-            self.logger.log_image(key='colorwheel', images=self.chunk(wheel_flow), step=self.global_step) # grayscale image of the expected norm of the flow
+            self.logger.log_image(key='fwd_flow', images=self.chunk(fwd_flow), step=self.global_step) 
+            self.logger.log_image(key='fwd_warped', images=self.chunk(fwd_warped), step=self.global_step) 
+            self.logger.log_image(key='gt_fwd_flow', images=self.chunk(gt_fwd), step=self.global_step) 
+            self.logger.log_image(key='gt_fwd_flow_100', images=self.chunk(gt_fwd_100), step=self.global_step) 
+            self.logger.log_image(key='gt_raft', images=self.chunk(gt_fwd_raft), step=self.global_step) 
+            self.logger.log_image(key='gt_smurf', images=self.chunk(gt_fwd_smurf), step=self.global_step) 
+            self.logger.log_image(key='diff_flow', images=self.chunk(diff_flows), step=self.global_step) 
+            self.logger.log_image(key='filters', images=self.chunk(filters), step=self.global_step) 
+            self.logger.log_image(key='occ_mask', images=self.chunk(occ_mask_vis), step=self.global_step) 
+            self.logger.log_image(key='colorwheel', images=self.chunk(wheel_flow), step=self.global_step) 
 
             # Full validation
             if self.cfg.validation.full_val_every is not None and self.global_step - self.last_full_val >= self.cfg.validation.full_val_every:
@@ -638,12 +644,12 @@ class OverfitSoftLearner(L.LightningModule):
                     # Print out feats
                     if self.cfg.cost.method in ['feats', 'nn']:
                         if self.cfg.cost.method == 'feats':
-                            src_feats = self.model.feats[:, 1] / torch.linalg.norm(self.model.feats[:, 1], dim=2, keepdim=True)
-                            tgt_feats = self.model.feats[:, 2] / torch.linalg.norm(self.model.feats[:, 2], dim=2, keepdim=True)
+                            src_feats = self.model.feats[:, 2] / torch.linalg.norm(self.model.feats[:, 2], dim=2, keepdim=True)
+                            tgt_feats = self.model.feats[:, 1] / torch.linalg.norm(self.model.feats[:, 1], dim=2, keepdim=True)
                         else:
                             src_feats, tgt_feats = self.model.get_feats(batch, src_idx=[2], tgt_idx=[1])
-                        src_feats = (torch.permute(src_feats, (1, 0, 2, 3)) * 0.5 + 0.5) * 255
-                        tgt_feats = (torch.permute(tgt_feats, (1, 0, 2, 3)) * 0.5 + 0.5) * 255
+                        src_feats = (torch.permute(src_feats[:, 0], (1, 0, 2, 3)) * 0.5 + 0.5) * 255
+                        tgt_feats = (torch.permute(tgt_feats[:, 0], (1, 0, 2, 3)) * 0.5 + 0.5) * 255
                         self.logger.log_image(key='src_feats', images=self.chunk(src_feats), step=self.global_step)
                         self.logger.log_image(key='tgt_feats', images=self.chunk(tgt_feats), step=self.global_step)
             elif self.cfg.validation.full_val_every is not None:

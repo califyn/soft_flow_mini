@@ -258,7 +258,6 @@ def visualize(dataset, model_fwd, sample_idxs=None, display_keys=None, warped_fw
             ret[:, 2] = ret[:, 2] - green_vals * green_mask - red_vals * red_mask
             out['diff_between'].append(ret)
         if 'occ' in display_keys:
-            print(batch.get_dict("masks")) # empty
             out['occ'].append(batch.get_dict("masks")['occ'].repeat(1, 3, 1, 1))
         if 'fl_pos' in display_keys:
             fl_pos = compute_fl(batch.flow[0], pred_flow, 
