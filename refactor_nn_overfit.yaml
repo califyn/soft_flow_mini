@@ -6,7 +6,7 @@ wandb:
     project: soft_flow
     entity: califyn
 model:
-    inference_mode: base
+    inference_mode: three_frames
     weight_sl: 31
     downsample_factor: 1
     filter_zoom: 1
@@ -18,17 +18,17 @@ model:
     frameskip: 1
     norm: 0.0
     entropy: 0.0
-    feat_dim: null
-    temp: null
+    feat_dim: 32 #12 #32 #28 #128
+    temp: 9 #0.1
     charbonnier_flatness: 0.0 #1e-1
     fft_filter: null #butter #rect
     fft: 1e-1 #65,95 for rect
-    border_handling: fourth_channel #pad_feats
+    border_handling: pad_feats
     border_handling_on: -1 #10000000
     common_fate: 0.
 cost:
-    method: weights
-    model: null
+    method: nn
+    model: croco_dpt
     pred_occ_mask: null #3fb
     both_sided: true
 dataset:
@@ -40,11 +40,11 @@ dataset:
     imsz_super: 1
     dstype: clean
     augmentations:
-        random_crop: false
-        color: false 
-        mask: false
+        random_crop: true
+        color: true
+        mask: true
     flow_max: 15
-    crop_to: null 
+    crop_to: 224,224
     use_feats: null
     num_workers: 7
 training:
@@ -53,17 +53,17 @@ training:
         batch_size: 1
         shuffle: true
     overfit_batch: 1
-    lr: 5e-1
-    high_lr: 5e-1
+    lr: 2e-5
+    high_lr: 2e-5
     high_lr_steps: 0
-    temp_lr: null 
+    temp_lr: 3e-4 #5e-2
     weight_decay: 0.
     ckpt_every: 1500 #12500
 validation:
     check_epoch: 100
     limit_batch: 1
     check_interval: 1
-    full_val_every: null # only compatibile with crops
+    full_val_every: 100
     data:
         batch_size: 1
         shuffle: false

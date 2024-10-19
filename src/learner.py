@@ -201,8 +201,8 @@ class SoftMultiFramePredictor(torch.nn.Module):
 
             src_feats = torch.reshape(src_in, (B, N, -1, *src_in.shape[2:]))
             tgt_feats = torch.reshape(tgt_in, (B, N, -1, *tgt_in.shape[2:]))
-            src_feats = src_feats / (torch.linalg.norm(src_feats, dim=2, keepdim=True) + 1e-10)
-            tgt_feats = tgt_feats / (torch.linalg.norm(tgt_feats, dim=2, keepdim=True) + 1e-10)
+        src_feats = src_feats / (torch.linalg.norm(src_feats, dim=2, keepdim=True) + 1e-10)
+        tgt_feats = tgt_feats / (torch.linalg.norm(tgt_feats, dim=2, keepdim=True) + 1e-10)
 
         return src_feats, tgt_feats
 
@@ -276,7 +276,10 @@ class OverfitSoftLearner(L.LightningModule):
         self.downsample_factor = cfg.model.downsample_factor
         self.filter_zoom = cfg.model.filter_zoom
         self.inference_mode = cfg.model.inference_mode
-        self.temp = torch.nn.Parameter(torch.Tensor([cfg.model.temp]))
+        if cfg.model.temp is not None:
+            self.temp = torch.nn.Parameter(torch.Tensor([cfg.model.temp]))
+        else:
+            self.temp = None
 
         imsz_sm = [int(x) for x in cfg.dataset.imsz.split(",")]
         imsz_lg = [int(x) for x in cfg.dataset.imsz_super.split(",")]
@@ -301,7 +304,9 @@ class OverfitSoftLearner(L.LightningModule):
             model_opt = torch.optim.AdamW(param_groups, lr=self.cfg.training.lr, betas=(0.9, 0.95))
         else:
             model_opt = torch.optim.Adam(self.trainer.model.parameters(), lr=self.cfg.training.lr, weight_decay=self.cfg.training.weight_decay)
-        temp_opt = torch.optim.Adam([self.temp], lr=self.cfg.training.temp_lr, weight_decay=self.cfg.training.weight_decay) # even if the LR is 0, it will move a little
+
+        if self.temp is not None:
+            temp_opt = torch.optim.Adam([self.temp], lr=self.cfg.training.temp_lr, weight_decay=self.cfg.training.weight_decay) # even if the LR is 0, it will move a little
 
         if self.cfg.training.lr > 0:
             high_lr = self.cfg.training.high_lr/self.cfg.training.lr
@@ -309,15 +314,31 @@ class OverfitSoftLearner(L.LightningModule):
             high_lr = self.cfg.training.high_lr
         warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(model_opt, lr_lambda = lambda x: high_lr if x < self.cfg.training.high_lr_steps else 1)
 
-        return (
-            {
-                "optimizer": model_opt,
-                "lr_scheduler": {
-                    "scheduler": warmup_scheduler,
-                }
-            },
-            { "optimizer": temp_opt }
-        )
+        if self.temp is not None:
+            return (
+                {
+                    "optimizer": model_opt,
+                    "lr_scheduler": {
+                        "scheduler": warmup_scheduler,
+                    }
+                },
+                { "optimizer": temp_opt }
+            )
+        else:
+            return (
+                {
+                    "optimizer": model_opt,
+                    "lr_scheduler": {
+                        "scheduler": warmup_scheduler,
+                    }
+                },
+            )
+
+    def get_optimizers(self):
+        if self.temp is not None:
+            return tuple(self.optimizers())
+        else:
+            return (self.optimizers(), )
 
     def chunk(self, x):
         bsz = x.shape[0]
@@ -419,7 +440,10 @@ class OverfitSoftLearner(L.LightningModule):
             src_idx, tgt_idx = [2, 0], [1, 1]
         elif self.inference_mode == "bisided":
             src_idx, tgt_idx = [2, 1], [1, 2]
-        temp = self.temp * temp_lambda
+        if self.temp is not None:
+            temp = self.temp * temp_lambda
+        else:
+            temp = None
 
         if self.cfg.cost.pred_occ_mask == "3fb":
             assert(self.inference_mode == "three_frames")
@@ -445,10 +469,9 @@ class OverfitSoftLearner(L.LightningModule):
         if self.global_step > self.cfg.model.border_handling_on:
             self.model.border_handling = self.cfg.model.border_handling
 
-        model_opt, temp_opt = self.optimizers()
         sched = self.lr_schedulers()
-        model_opt.zero_grad()
-        temp_opt.zero_grad()
+        for opt in tuple(self.get_optimizers()):
+            opt.zero_grad()
 
         outputs = self(batch)
         loss = self.loss(outputs, occ_mask=None)
@@ -477,8 +500,8 @@ class OverfitSoftLearner(L.LightningModule):
             }, batch_size=B)
 
         self.manual_backward(loss)
-        model_opt.step()
-        temp_opt.step()
+        for opt in tuple(self.get_optimizers()):
+            opt.step()
         sched.step()
 
     def validation_step(self, batch, batch_idx):
@@ -492,7 +515,7 @@ class OverfitSoftLearner(L.LightningModule):
             flow_max = max(self.check_filter_size(batch.frames_up[1], batch.frames_up[2], None), self.check_filter_size(batch.frames_up[1], batch.frames_up[0], check_flow))
         else:
             flow_max = self.check_filter_size(batch.frames_up[-2], batch.frames_up[-1], check_flow)
-        if self.temp < 0:
+        if self.temp is not None and self.temp < 0:
             print(f'Temperature ({self.temp}) is less than zero')
 
         with torch.no_grad():
@@ -535,7 +558,7 @@ class OverfitSoftLearner(L.LightningModule):
                 "val/epe": epe,
                 "val/mode_epe": mode_epe,
                 "val/occ_epe": occ_epe,
-                "temp": torch.mean(self.temp),
+                "temp": 0. if self.temp is None else torch.mean(self.temp),
             }, sync_dist=True, batch_size=B)
             print(f"Current epe: {epe}")
 
@@ -554,10 +577,12 @@ class OverfitSoftLearner(L.LightningModule):
             batch_scale = torch.max(batch.frames[1])
             fwd_flows = torchvision.utils.flow_to_image(fwd_flow) / 255 * batch_scale
             fwd_flows_100 = torchvision.utils.flow_to_image(outputs_100["flow"][:, 0]) / 255 * batch_scale
+            """
             if bwd_flow is not None:
                 bwd_flows = torchvision.utils.flow_to_image(bwd_flow) / 255 * batch_scale
             else:
                 bwd_flows = torchvision.utils.flow_to_image(torch.zeros_like(fwd_flow)) / 255 * batch_scale
+            """
             gt_flows = torchvision.utils.flow_to_image(torch.nan_to_num(gt_flow)) / 255 * batch_scale
             diff_flows = torchvision.utils.flow_to_image(torch.nan_to_num(fwd_flow - gt_flow)) / 255 * batch_scale
             raft_pred = torchvision.utils.flow_to_image(raft_pred) / 255 * batch_scale
@@ -600,7 +625,9 @@ class OverfitSoftLearner(L.LightningModule):
             # Full validation
             if self.cfg.validation.full_val_every is not None and self.global_step - self.last_full_val >= self.cfg.validation.full_val_every:
                 self.last_full_val = self.global_step
-                if self.val_dataset is not None:
+
+                # Do full evaluation for cropped NNs
+                if self.val_dataset is not None and self.cfg.cost.method == 'nn':
                     import src.evaluation as evaluation
                     self.val_dataset.return_uncropped = True
 
@@ -641,17 +668,13 @@ class OverfitSoftLearner(L.LightningModule):
                     full_out_back = evaluation.evaluate_against(self.val_dataset, model_att, evaluation.get_smurf_fwd(self.val_dataset, device=batch.frames[0].device), cfg=self.cfg)
                     self.logger.log_image(key="FULL_dprod_random", images=[full_out_back["random"]])
 
-                    # Print out feats
-                    if self.cfg.cost.method in ['feats', 'nn']:
-                        if self.cfg.cost.method == 'feats':
-                            src_feats = self.model.feats[:, 2] / torch.linalg.norm(self.model.feats[:, 2], dim=2, keepdim=True)
-                            tgt_feats = self.model.feats[:, 1] / torch.linalg.norm(self.model.feats[:, 1], dim=2, keepdim=True)
-                        else:
-                            src_feats, tgt_feats = self.model.get_feats(batch, src_idx=[2], tgt_idx=[1])
-                        src_feats = (torch.permute(src_feats[:, 0], (1, 0, 2, 3)) * 0.5 + 0.5) * 255
-                        tgt_feats = (torch.permute(tgt_feats[:, 0], (1, 0, 2, 3)) * 0.5 + 0.5) * 255
-                        self.logger.log_image(key='src_feats', images=self.chunk(src_feats), step=self.global_step)
-                        self.logger.log_image(key='tgt_feats', images=self.chunk(tgt_feats), step=self.global_step)
+                # Print out feats
+                if self.cfg.cost.method in ['feats', 'nn']:
+                    src_feats, tgt_feats = self.model.get_feats(batch, src_idx=[2], tgt_idx=[1])
+                    src_feats = (torch.permute(src_feats[:, 0], (1, 0, 2, 3)) * 0.5 + 0.5) * 255
+                    tgt_feats = (torch.permute(tgt_feats[:, 0], (1, 0, 2, 3)) * 0.5 + 0.5) * 255
+                    self.logger.log_image(key='src_feats', images=self.chunk(src_feats), step=self.global_step)
+                    self.logger.log_image(key='tgt_feats', images=self.chunk(tgt_feats), step=self.global_step)
             elif self.cfg.validation.full_val_every is not None:
                 print(f"{self.cfg.validation.full_val_every - (self.global_step - self.last_full_val)} steps until next fullval")
 
