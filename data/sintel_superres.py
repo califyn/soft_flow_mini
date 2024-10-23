@@ -58,15 +58,16 @@ class SintelSuperResDataset(SuperResDataset):
                 png_base_path = pathContent[i][0][7:]
                 frame1_path = base_path + png_base_path % (frame_num - 1)
                 frame2_path = base_path + png_base_path % frame_num
-                frame3_path = base_path + png_base_path % (frame_num + 1)
+                frame3_path = base_path + png_base_path % (frame_num + cfg.dataset.skip_forward)
                 if cfg.dataset.flow_max > 0 and flow_max[frame2_path] >= cfg.dataset.flow_max:
                     continue
 
-                self.frame_paths.append([frame1_path, frame2_path, frame3_path])
-                self.flow_paths.append([flow_path])
-                self.mask_paths.append({
-                    "occ": frame2_path.replace(dstype, "occlusions")
-                })
+                if os.path.exists(frame3_path):
+                    self.frame_paths.append([frame1_path, frame2_path, frame3_path])
+                    self.flow_paths.append([flow_path])
+                    self.mask_paths.append({
+                        "occ": frame2_path.replace(dstype, "occlusions")
+                    })
             elif (self.split == 'validation' and splitContent[i][0] == '2') or self.split == 'all':
                 frame_num = int(pathContent[i][2])
 
@@ -78,13 +79,14 @@ class SintelSuperResDataset(SuperResDataset):
                 png_base_path = pathContent[i][0][7:]
                 frame1_path = base_path + png_base_path % (frame_num - 1)
                 frame2_path = base_path + png_base_path % frame_num
-                frame3_path = base_path + png_base_path % (frame_num + 1)
+                frame3_path = base_path + png_base_path % (frame_num + cfg.dataset.skip_forward)
                 if cfg.dataset.flow_max > 0 and flow_max[frame2_path] >= cfg.dataset.flow_max:
                     continue
 
-                self.frame_paths.append([frame1_path, frame2_path, frame3_path])
-                self.flow_paths.append([flow_path])
-                self.mask_paths.append({
-                    "occ": frame2_path.replace(dstype, "occlusions")
-                })
+                if os.path.exists(frame3_path):
+                    self.frame_paths.append([frame1_path, frame2_path, frame3_path])
+                    self.flow_paths.append([flow_path])
+                    self.mask_paths.append({
+                        "occ": frame2_path.replace(dstype, "occlusions")
+                    })
         print("Sintel Dataset:", dstype, self.split, len(self.frame_paths))

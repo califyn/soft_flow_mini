@@ -22,7 +22,8 @@ from data.sintel_superres import SintelSuperResDataset
 from data.superres import Batch
 
 # Load cfg and dataset
-cfg = OmegaConf.load('croco_fixed_overfit.yaml')
+cfg = OmegaConf.load('refactor_nn_overfit.yaml')
+cfg.dataset.skip_forward = 1
 dataset = SintelSuperResDataset(cfg, cfg.dataset.val_split, is_val=True)
 
 # Set image size
@@ -36,10 +37,10 @@ with open("wandb_api_key.txt", "r") as f:
     wandb.login(key=f.readline().strip('\n'))
 
 # Load model
-#run_path = f"califyn/soft_flow/7678649213571033" # one sided run
+run_path = f"califyn/soft_flow/7678649213571033" # one sided run
 #run_path = f"califyn/soft_flow/8095733731050450" # one sided run with minimal coloraug
 #run_path = f"califyn/soft_flow/8097297764129804" # one sided run with maximal coloraug
-run_path = f"calify/soft_flow/8367374615662478" # strong masking
+#run_path = f"califyn/soft_flow/8367374615662478" # strong masking
 print(run_path)
 try:
     checkpoint_path = download_latest_checkpoint(
@@ -181,21 +182,14 @@ def get_vis(query_idx):
     plt.close()
 
 import imageio
+
+N = 10
 images = []
-x_list = np.linspace(0.1 * src_frame.shape[2], 0.9 * src_frame.shape[2], num=1000)
-y_list = np.linspace(0.1 * src_frame.shape[3], 0.9 * src_frame.shape[3], num=1000)
+x_list = np.linspace(0.1 * src_frame.shape[2], 0.9 * src_frame.shape[2], num=N)
+y_list = np.linspace(0.1 * src_frame.shape[3], 0.9 * src_frame.shape[3], num=N)
 for x, y in tqdm(zip(x_list, y_list)):
     get_vis([int(x), int(y)])
     image = imageio.imread('att.png')
     images.append(image)
 
 imageio.mimsave("att.mp4", images, format='MP4')
-"""
-with imageio.get_writer('./att.gif', mode='I') as writer:
-    x_list = np.linspace(0.1 * src_frame.shape[2], 0.9 * src_frame.shape[2], num=20)
-    y_list = np.linspace(0.1 * src_frame.shape[3], 0.9 * src_frame.shape[3], num=20)
-    for x, y in tqdm(zip(x_list, y_list)):
-        get_vis([int(x), int(y)])
-        image = imageio.imread('att.png')
-        writer.append_data(image)
-"""
