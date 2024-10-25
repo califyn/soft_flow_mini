@@ -30,6 +30,12 @@ class KITTISuperResDataset(SuperResDataset):
             list(glob(base_path + f"image_2/*_{(10+frameskip):02d}.png")),
         ]
         files = [list(sorted(files_sub)) for files_sub in files]
+
+        flow_max = {}
+        with open("data/splits/kitti/kitti_max.txt", "r") as f:
+            for l in f.readlines():
+                flow_max[l[:l.index(",")]] = float(l[l.index(",")+1:])
+
         with open(split_path, "r") as f:
             lines = f.readlines()
             split_map = {l[:l.index(",")]: l[l.index(",")+1:-1] for l in lines}
@@ -37,6 +43,9 @@ class KITTISuperResDataset(SuperResDataset):
             for a, b, c in zip(*files):
                 if b not in split_map:
                     raise ValueError
+                if cfg.dataset.flow_max > 0 and flow_max[b] >= cfg.dataset.flow_max:
+                    continue
+                print(cfg.dataset.flow_max, flow_max[b])
                 if self.split == 'all' or split_map[b] == self.split:
                     self.frame_paths.append([a, b, c])
                     self.flow_paths.append([frame_to_fwd_flow(b)])

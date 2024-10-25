@@ -41,10 +41,11 @@ class Batch():
             self.masks = None
 
     def to(self, device):
-        for attr in Batch.stackables + Batch.dictionaries:
-            setattr(self, attr, torch.Tensor(getattr(self, attr)).to(device))
+        for attr in Batch.stackables:
+            if getattr(self, attr) is not None:
+                setattr(self, attr, torch.Tensor(getattr(self, attr)).to(device))
 
-        for attr in Batch.optional_stackables:
+        for attr in Batch.dictionaries + Batch.optional_stackables:
             if getattr(self, attr, None) is not None:
                 setattr(self, attr, torch.Tensor(getattr(self, attr)).to(device))
 
@@ -59,7 +60,8 @@ class Batch():
             setattr(ret, attr, np.stack([getattr(b, attr) for b in list_instances], axis=1))
 
         for attr in Batch.dictionaries: 
-            setattr(ret, attr, np.stack([getattr(b, attr) for b in list_instances], axis=0))
+            if getattr(list_instances[0], attr, None) is not None:
+                setattr(ret, attr, np.stack([getattr(b, attr) for b in list_instances], axis=0))
 
         for attr in Batch.string_stackables:
             setattr(ret, attr, np.stack([getattr(b, attr) for b in list_instances], axis=1)) # not sure if this will work lol
@@ -261,14 +263,17 @@ class SuperResDataset():
         return img
 
     def gen_flow_masks(self, flow_orig, shrink=False):
-        assert(len(flow_orig) == 1)
-        flow_mags = torch.linalg.norm(flow_orig[0], dim=0, keepdim=True)
+        if flow_orig is not None:
+            assert(len(flow_orig) == 1)
+            flow_mags = torch.linalg.norm(flow_orig[0], dim=0, keepdim=True)
 
-        return {
-            "s0-10": flow_mags < 10,
-            "s10-40": torch.logical_and(flow_mags >= 10.0, flow_mags < 40.0),
-            "s40+": flow_mags >= 40.0
-        }
+            return {
+                "s0-10": flow_mags < 10,
+                "s10-40": torch.logical_and(flow_mags >= 10.0, flow_mags < 40.0),
+                "s40+": flow_mags >= 40.0
+            }
+        else:
+            return {}
 
     def gen_inverse_masks(self, masks):
         not_masks = {"not_" + name: 1-mask for name, mask in masks.items()}
@@ -307,13 +312,16 @@ class SuperResDataset():
             batch.flow = self.crop(batch.flow, [x1, x2, y1, y2])
         #up_ratio *= self.imsz_super_res
         #batch.flow_orig = self.crop(batch.flow_orig, [x1 * up_ratio + self.image_trim[2], x2 * up_ratio + self.image_trim[3], y1 * up_ratio + self.image_trim[0], y2 * up_ratio + self.image_trim[1]])
-        crop_masks = []
-        for i in range(batch.masks.shape[-1]):
-            crop_masks.append(self.crop(batch.masks[..., i], [x1, x2, y1, y2]))
-        if isinstance(batch.masks, torch.Tensor):
-            batch.masks = torch.stack(crop_masks, axis=-1)
+        if batch.masks is not None:
+            crop_masks = []
+            for i in range(batch.masks.shape[-1]):
+                crop_masks.append(self.crop(batch.masks[..., i], [x1, x2, y1, y2]))
+            if isinstance(batch.masks, torch.Tensor):
+                batch.masks = torch.stack(crop_masks, axis=-1)
+            else:
+                batch.masks = np.stack(crop_masks, axis=-1)
         else:
-            batch.masks = np.stack(crop_masks, axis=-1)
+            batch.masks = None
 
         return batch
 
@@ -326,7 +334,10 @@ class SuperResDataset():
             flow_paths = self.flow_paths[idx]
         else:
             flow_paths = None
-        mask_paths = self.mask_paths[idx]
+        if self.mask_paths is not None:
+            mask_paths = self.mask_paths[idx]
+        else:
+            mask_paths = {}
 
         image = []
         for p in frame_paths:
@@ -409,8 +420,9 @@ class SuperResDataset():
 
         masks = self.gen_inverse_masks(masks)
         flow_masks = self.gen_flow_masks(flow_orig)
-        if flow_orig[0].shape[1] == 2 * image_orig[0].shape[1] and flow_orig[0].shape[2] == 2 * image_orig[0].shape[2]:
-            flow_masks = {k: v[:, ::2, ::2] for k, v in flow_masks.items()}
+        if flow_orig is not None:
+            if flow_orig[0].shape[1] == 2 * image_orig[0].shape[1] and flow_orig[0].shape[2] == 2 * image_orig[0].shape[2]:
+                flow_masks = {k: v[:, ::2, ::2] for k, v in flow_masks.items()}
         masks = masks | flow_masks
         
         batch = Batch(
@@ -421,7 +433,7 @@ class SuperResDataset():
             visible_tgt=np.stack(visible_tgt, axis=0),
             loss_src=np.stack(image_up, axis=0),
             loss_tgt=np.stack(image, axis=0),
-            flow=np.stack(flow, axis=0),
+            flow=None if flow is None else np.stack(flow, axis=0),
             masks=masks,
         )
         if not self.return_uncropped and self.crop_to is not None:

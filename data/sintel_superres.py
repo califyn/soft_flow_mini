@@ -7,12 +7,15 @@ from torchvision import transforms
 import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 import random
+import os
 
 from .superres import SuperResDataset, load_flow
 
 class SintelSuperResDataset(SuperResDataset):
     def load_paths(self, cfg, split):
         assert self.split in ['training', 'validation', 'all'], "Split must be training or validation"
+        if not hasattr(cfg.dataset, 'skip_forward') or cfg.dataset.skip_forward is None:
+            cfg.dataset.skip_forward = 1
 
         base_path = "/data/scene-rep/custom/Sintel/" # replace with your path
         self.path_file = "data/splits/sintel/Sintel.dat"

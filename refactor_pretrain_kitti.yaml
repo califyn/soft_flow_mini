@@ -1,0 +1,70 @@
+name: overfit
+
+wandb:
+    mode: dryrun
+    name: test
+    project: soft_flow
+    entity: califyn
+model:
+    inference_mode: three_frames
+    weight_sl: 31
+    downsample_factor: 1
+    filter_zoom: 1
+    smoothness: 2.5e-1
+    smoothness_edge: 150.0
+    pos_smoothness: 3e-2
+    temp_smoothness: 0.0 #3e-1
+    temp_on_occ: false #true
+    frameskip: 1
+    norm: 0.0
+    entropy: 0.0 #1e2
+    feat_dim: 32 #64 #12 #28 #128
+    temp: 9 #0.1
+    temp_scheduling: false 
+    charbonnier_flatness: 0.0 #1e-1
+    fft_filter: null #butter #rect
+    fft: 1e-1 #65,95 for rect
+    border_handling: pad_feats #fourth_channel #pad_feats
+    border_handling_on: 20000 #10000000
+    common_fate: 0.
+cost:
+    method: nn
+    model: croco_dpt
+    pred_occ_mask: null # 3fb
+    both_sided: true # false # FIX true
+dataset:
+    dataset: kitti #sintel
+    train_split: training 
+    val_split: validation
+    idx: 0 
+    imsz: 1 
+    imsz_super: 1
+    dstype: clean
+    augmentations:
+        random_crop: true
+        color: true # FIX false
+        mask: true # FIX false
+    flow_max: 15
+    crop_to: 224,224
+    use_feats: null #identity
+    num_workers: 7
+training:
+    precision: 32
+    data:
+        batch_size: 1
+        shuffle: true
+    overfit_batch: 0.0 #1 # 0.0 to turn off
+    lr: 2e-5
+    high_lr: 3e-4
+    high_lr_steps: 1000
+    temp_lr: 3e-4 #5e-2
+    weight_decay: 0.
+    ckpt_every: 12500
+validation:
+    check_epoch: 25
+    limit_batch: 64
+    check_interval: 1.0 #250
+    full_val_every: 12500 #25000 
+    data:
+        batch_size: 1
+        shuffle: false

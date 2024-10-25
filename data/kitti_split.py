@@ -1,3 +1,5 @@
+from superres import load_flow
+import numpy as np
 
 import random
 from glob import glob
@@ -21,5 +23,14 @@ with open(split_path, "w") as f:
             f.write(b + ",validation\n")
         else:
             f.write(b + ",training\n")
+
+flow_max_dict = {}
+for file in files[1]:
+    flow_np = load_flow(frame_to_fwd_flow(file))
+    flow_max_dict[file] = np.nanmax(np.abs(flow_np))
+
+with open("splits/kitti/kitti_max.txt", "w") as f:
+    for k, v in flow_max_dict.items():
+        f.write(k + "," + str(v) + "\n")
 
 print('KITTI splits generated!')

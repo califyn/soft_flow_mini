@@ -1,0 +1,20 @@
+name: evaluate
+
+wandb:
+    mode: dryrun
+    name: evaluate
+    project: soft_flow
+model:
+    frameskip: 1
+dataset:
+    idx: 0
+    imsz: 1 
+    imsz_super: 1
+    dstype: final
+    augmentations:
+        random_crop: false
+        color: false
+    flow_max: 15
+validation:
+    data:
+        batch_size: 1

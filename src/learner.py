@@ -31,6 +31,7 @@ import torchvision.transforms
 from torchvision.transforms import ToTensor, Normalize, Compose
 
 import wandb
+import random
 
 def patchify(p, imgs):
     """
@@ -238,6 +239,11 @@ class SoftMultiFramePredictor(torch.nn.Module):
 
         weights_shape = weights.size()
         weights = weights.flatten(start_dim=-2) * temp
+        """
+        if random.random() < 0.5:
+            mask = torch.bernoulli(torch.Tensor([0.95] * weights.shape[-1])).to(weights.device)
+            weights = weights - mask[None, None, None, None, :] * (2. * temp + 50.)
+        """
         weights = F.softmax(weights, dim=-1).view(weights_shape)
 
         if self.pred_occ_mask == "3fb":
@@ -359,7 +365,7 @@ class OverfitSoftLearner(L.LightningModule):
         else:
             loss = criterion(outputs["out"], outputs["loss_tgt"], self.cfg.model.charbonnier_flatness)
 
-        if self.inference_mode == "three_frames":
+        if self.inference_mode == "three_frames" and self.cfg.model.temp_smoothness > 0.:
             if self.cfg.model.temp_on_occ:
                 if self.cfg.cost.pred_occ_mask not in ["3fb", "gt"]:
                     raise ValueError
@@ -377,21 +383,24 @@ class OverfitSoftLearner(L.LightningModule):
                 temp_smooth_reg = temporal_smoothness_loss(outputs['flow'], r=None)
             loss += self.cfg.model.temp_smoothness * temp_smooth_reg
 
-        spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], 
-                                                  image=outputs['loss_tgt'], 
-                                                  edge_weight=self.cfg.model.smoothness_edge, 
-                                                  occ_mask=None)
-        loss += spat_smooth_reg * self.cfg.model.smoothness * (self.model.true_sl ** 2)
+        if self.cfg.model.smoothness > 0:
+            spat_smooth_reg = spatial_smoothness_loss(outputs['weights'], 
+                                                      image=outputs['loss_tgt'], 
+                                                      edge_weight=self.cfg.model.smoothness_edge, 
+                                                      occ_mask=None)
+            loss += spat_smooth_reg * self.cfg.model.smoothness * (self.model.true_sl ** 2)
 
-        spat_smooth_reg = position_spat_smoothness(outputs['flow'], degree=2)
-        loss += spat_smooth_reg * self.cfg.model.pos_smoothness
+        if self.cfg.model.pos_smoothness > 0:
+            spat_smooth_reg = position_spat_smoothness(outputs['flow'], degree=2)
+            loss += spat_smooth_reg * self.cfg.model.pos_smoothness
 
         # Common fate loss
-        flow_diff_x = torch.linalg.norm(outputs['flow'][:, :, :, :-1, :] - outputs['flow'][:, :, :, 1:, :], dim=2).detach()
-        flow_diff_y = torch.linalg.norm(outputs['flow'][:, :, :, :, :-1] - outputs['flow'][:, :, :, :, 1:], dim=2).detach()
-        flow_diff_x, flow_diff_y = torch.exp(-flow_diff_x * 10), torch.exp(-flow_diff_y * 10)
-        cf_loss = (flow_diff_x * outputs['neighbor_diff'][0]).mean() + (flow_diff_y * outputs['neighbor_diff'][1]).mean()
-        loss += cf_loss * self.cfg.model.common_fate
+        if self.cfg.model.common_fate > 0:
+            flow_diff_x = torch.linalg.norm(outputs['flow'][:, :, :, :-1, :] - outputs['flow'][:, :, :, 1:, :], dim=2).detach()
+            flow_diff_y = torch.linalg.norm(outputs['flow'][:, :, :, :, :-1] - outputs['flow'][:, :, :, :, 1:], dim=2).detach()
+            flow_diff_x, flow_diff_y = torch.exp(-flow_diff_x * 10), torch.exp(-flow_diff_y * 10)
+            cf_loss = (flow_diff_x * outputs['neighbor_diff'][0]).mean() + (flow_diff_y * outputs['neighbor_diff'][1]).mean()
+            loss += cf_loss * self.cfg.model.common_fate
 
         return loss
 
@@ -528,7 +537,11 @@ class OverfitSoftLearner(L.LightningModule):
                 bwd_flow = outputs["flow"][:, 1]
             else:
                 bwd_flow = None
-            gt_flow = batch.flow[0]
+
+            if batch.flow is not None:
+                gt_flow = batch.flow[0]
+            else:
+                gt_flow = self.do_raft_prediction(batch.frames_up[1], batch.frames_up[2])
 
             loss = self.loss(outputs, occ_mask=None)
 
