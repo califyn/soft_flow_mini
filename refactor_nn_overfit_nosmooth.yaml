@@ -41,8 +41,8 @@ dataset:
     dstype: clean
     augmentations:
         random_crop: true
-        color: true
-        mask: true
+        color: false
+        mask: false
     flow_max: 15
     crop_to: 224,224
     use_feats: null

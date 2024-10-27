@@ -64,7 +64,7 @@ validation:
     check_epoch: 25
     limit_batch: 64
     check_interval: 1.0 #250
-    full_val_every: 12500 #25000 
+    full_val_every: null #12500 #25000 # FIX THIS
     data:
         batch_size: 1
         shuffle: false

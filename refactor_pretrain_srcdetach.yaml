@@ -6,7 +6,7 @@ wandb:
     project: soft_flow
     entity: califyn
 model:
-    inference_mode: three_frames
+    inference_mode: three_frames_bisided
     weight_sl: 31
     downsample_factor: 1
     filter_zoom: 1

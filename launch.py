@@ -9,8 +9,8 @@ print(out)
 job = """#!/bin/bash
 
 #SBATCH -J soft_flow_{name}
-#SBATCH -o /data/scratch/califyn/flow_mini/slurm_logs/{name}_%j.out
-#SBATCH -e /data/scratch/califyn/flow_mini/slurm_logs/{name}_%j.out
+#SBATCH -o /data/scene-rep/u/califyn/flow_mini/slurm_logs/{name}_%j.out
+#SBATCH -e /data/scene-rep/u/califyn/flow_mini/slurm_logs/{name}_%j.out
 #SBATCH --mail-user='califyn@mit.edu'
 #SBATCH --mail-type=ALL
 #SBATCH --gres=gpu:{type_gpus}{num_gpus}
@@ -21,12 +21,12 @@ job = """#!/bin/bash
 #SBATCH --cpus-per-task=8
 #SBATCH --requeue
 
-rm /data/scratch/califyn/flow_mini/slurm_logs/latest.out
-ln -s "/data/scratch/califyn/flow_mini/slurm_logs/{name}_$SLURM_JOB_ID.out" /data/scratch/califyn/flow_mini/slurm_logs/latest.out
+rm /data/scene-rep/u/califyn/flow_mini/slurm_logs/latest.out
+ln -s "/data/scene-rep/u/califyn/flow_mini/slurm_logs/{name}_$SLURM_JOB_ID.out" /data/scene-rep/u/califyn/flow_mini/slurm_logs/latest.out
 
-source /data/scratch/califyn/.bashrc
+source /data/scene-rep/u/califyn/.bashrc
 conda activate croco
-cd /data/scratch/califyn/flow_mini
+cd /data/scene-rep/u/califyn/flow_mini
 ulimit -n 50000
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 echo "About to execute..."

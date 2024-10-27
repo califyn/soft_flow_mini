@@ -139,8 +139,8 @@ def accumulate_metrics(dataset, model_fwd, cfg=None):
                     if j < i:
                         j = j + 1
                         continue
-                    gt = batch.flow[0]
                     pred = model_fwd(batch)
+                    gt = batch.flow[0]
                     if pred.shape[1] != 2:
                         metrics[primary_metric].append(0.)
                     else:

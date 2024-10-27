@@ -15,7 +15,7 @@ def get_dstype(s):
 
 class LLFFSuperResDataset(SuperResDataset):
     def load_paths_dstype(self, cfg, dstype):
-        base_path = f"/nobackup/nvme1/datasets/llff/{dstype}/images/" # replace with your path
+        base_path = f"/data/scene-rep/custom/llff/{dstype}/images/" # replace with your path
         files = list(glob(base_path + "*.jpg")) + list(glob(base_path + "*.JPG"))
         files = list(sorted(files))
 
