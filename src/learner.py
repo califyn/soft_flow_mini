@@ -19,6 +19,7 @@ from .soft_utils import *
 from .softsplat_downsample import softsplat
 from src import eigenutils
 from .unet import HalfUnet, Unet
+from data.superres import Batch
 
 from models.croco import CroCoNet
 from models.croco_downstream import croco_args_from_ckpt, CroCoDownstreamBinocular
@@ -32,6 +33,8 @@ from torchvision.transforms import ToTensor, Normalize, Compose
 
 import wandb
 import random
+
+import matplotlib.pyplot as plt
 
 def patchify(p, imgs):
     """
@@ -162,7 +165,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
             elif cfg.cost.model == "croco_dpt":
                 self.nn = CroCoDPTWrapper(feat_dim, both_sided=cfg.cost.both_sided)
 
-    def get_feats(self, batch, src_idx=[2], tgt_idx=[1]):
+    def get_feats(self, batch, src_idx=[2], tgt_idx=[1], report_orig=False):
         if self.method == "feats":
             src_feats = torch.stack([self.feats[:, s] for s in src_idx], dim=1)
             tgt_feats = torch.stack([self.feats[:, t] for t in tgt_idx], dim=1)
@@ -184,7 +187,14 @@ class SoftMultiFramePredictor(torch.nn.Module):
                 src_in = torch.nn.functional.pad(src_in, (t_patch, t_patch, t_patch, t_patch), mode="constant")
                 tgt_in = torch.nn.functional.pad(tgt_in, (t_patch, t_patch, t_patch, t_patch), mode="constant")
 
-            src_in, tgt_in = self.nn(src_in, img2=tgt_in), self.nn(tgt_in, img2=src_in)
+            src_in_, tgt_in_ = deepcopy(src_in.detach()), deepcopy(tgt_in.detach())
+            src_out, tgt_out = [], []
+            for i in range(src_in.shape[0]):
+                src_out.append(self.nn(src_in[i, None], img2=tgt_in[i, None]))
+                tgt_out.append(self.nn(tgt_in[i, None], img2=src_in[i, None]))
+            src_in, tgt_in = torch.cat(src_out, dim=0), torch.cat(tgt_out, dim=0)
+            #src_in, tgt_in = self.nn(src_in, img2=tgt_in), self.nn(tgt_in, img2=src_in)
+            src_out_, tgt_out_ = deepcopy(src_in.detach()), deepcopy(tgt_in.detach())
             
             """
             # ouroboros
@@ -208,10 +218,12 @@ class SoftMultiFramePredictor(torch.nn.Module):
 
         #src_feats = src_feats.detach()
 
-        return src_feats, tgt_feats
+        if report_orig:
+            return src_feats, tgt_feats, src_in_, tgt_in_, src_out_, tgt_out_
+        else:
+            return src_feats, tgt_feats
 
-
-    def forward(self, batch, weights=None, temp=None, src_idx=[0], tgt_idx=[1]):
+    def old_forward(self, batch, weights=None, temp=None, src_idx=[0], tgt_idx=[1]):
         B = batch.visible_src.shape[1]
         N = len(src_idx)
         device = batch.visible_src.device
@@ -275,6 +287,101 @@ class SoftMultiFramePredictor(torch.nn.Module):
                     'loss_tgt': torch.stack([batch.loss_tgt[t] for t in tgt_idx], dim=1),
                     'pred_occ_mask': pred_occ_mask,
                     'neighbor_diff': (neighbor_diff_x, neighbor_diff_y),
+        }
+
+
+    def forward(self, batch, weights=None, temp=None, src_idx=[0], tgt_idx=[1]):
+        B = batch.visible_src.shape[1]
+        N = len(src_idx)
+        device = batch.visible_src.device
+        if temp is None:
+            temp = 1.
+
+        pred_occ_mask = None
+        if weights is None:
+            if self.method == 'weights':
+                weights = self.weights
+                neighbor_diff_x, neighbor_diff_y = 0., 0.
+                raise ValueError
+            elif self.method == 'feats' or self.method == 'nn':
+                if self.method == 'feats' and self.border_handling == 'pad_feats':
+                    raise ValueError("pad_feats border handling not supported for non-NN weight methods yet") 
+
+                src_feats, tgt_feats, src_out, tgt_out, src_out2, tgt_out2 = self.get_feats(batch, src_idx=src_idx, tgt_idx=tgt_idx, report_orig=True)
+                src_feats = torch.reshape(src_feats, (B*N, *src_feats.shape[2:]))
+                src_feats = torch.nn.functional.interpolate(src_feats, scale_factor=self.downsample_factor, mode='bilinear')
+                src_feats = torch.reshape(src_feats, (B, N, *src_feats.shape[1:]))
+                src_feats_, tgt_feats_ = deepcopy(src_feats.detach()), deepcopy(tgt_feats.detach())
+
+                # Compute common fate loss (1)
+                neighbor_diff_x = 1. - torch.sum(tgt_feats[..., :-1, :] * tgt_feats[..., 1:, :], dim=2)
+                neighbor_diff_y = 1. - torch.sum(tgt_feats[..., :, :-1] * tgt_feats[..., :, 1:], dim=2)
+                #
+
+                #src_feats = pad_for_filter(src_feats, self.weight_sl, self.downsample_factor, pad=self.border_handling != "pad_feats")
+                #tgt_feats = tgt_feats[..., None, None]
+
+                src_feats = src_feats[..., None, :, :] # B N C (M) H W
+                print("Hey, fixed seed")
+                torch.manual_seed(3407)
+                flat_mask = torch.multinomial(torch.ones_like(tgt_feats[0, 0, 0].flatten()), 21*21).to(tgt_feats.device)
+
+                tgt_feats = torch.reshape(tgt_feats, (*tgt_feats.shape[:3], -1))
+                tgt_feats = tgt_feats[..., flat_mask, None, None] # B N C M (H) (W)
+
+                weights = torch.sum(src_feats * tgt_feats, dim=2) # sum across the features
+
+        weights_shape = weights.size()
+        weights = weights.flatten(start_dim=-2) * temp
+        """
+        if random.random() < 0.5:
+            mask = torch.bernoulli(torch.Tensor([0.95] * weights.shape[-1])).to(weights.device)
+            weights = weights - mask[None, None, None, None, :] * (2. * temp + 50.)
+        """
+        weights = F.softmax(weights, dim=-1).view(weights_shape)
+
+        if self.pred_occ_mask == "3fb":
+            raise NotImplementedError
+            assert(self.downsample_factor == 1)
+            weights_range = get_range(weights.detach())
+            pred_occ_mask = torch.gt(weights_range, weights_range.new_tensor(0.5)).float()
+
+        weights = weights.to(device)
+        grid = self.grid.to(device)
+
+        #loss_src = torch.stack([batch.loss_src[s] for s in src_idx], dim=1)
+        #x_padded = pad_for_filter(loss_src, self.weight_sl, self.downsample_factor, border_fourth_channel=self.border_handling in ["fourth_channel", "pad_feats"])
+        if self.border_handling is not None:
+            raise NotImplementedError
+        loss_src = torch.stack([batch.loss_src[s] for s in src_idx], dim=1)[..., None, :, :]
+
+        # For each pixel in the input frame, compute the weighted sum of its neighborhood
+        out = torch.einsum('bnmkl, bncmkl->bncm', weights, loss_src)
+        expected_positions = None #torch.einsum('bnijkl,klm->bnijm', weights, grid) / self.downsample_factor
+
+        #expected_positions = torch.permute(expected_positions, (0, 1, 4, 2, 3))
+        #expected_positions = expected_positions.flip(2)
+        loss_tgt = torch.stack([batch.loss_tgt[t] for t in tgt_idx], dim=1).to(flat_mask.device) # B N C H W
+        loss_tgt = torch.reshape(loss_tgt, (*loss_tgt.shape[:3], -1)) # B N C HW
+        loss_tgt = loss_tgt[..., flat_mask] # B N C M
+
+        return {
+                    'out':out, 
+                    'flow': expected_positions, 
+                    'weights': None, #weights, 
+                    'loss_src': loss_src,
+                    'loss_tgt': loss_tgt, #torch.stack([batch.loss_tgt[t] for t in tgt_idx], dim=1),
+                    'pred_occ_mask': None, #pred_occ_mask,
+                    'weights': weights,
+                    'src_feats': src_feats,
+                    'tgt_feats': tgt_feats,
+                    'src_feats_': src_feats_,
+                    'tgt_feats_': tgt_feats_,
+                    'src_out': src_out,
+                    'tgt_out': tgt_out,
+                    'src_out2': src_out2,
+                    'tgt_out2': tgt_out2,
+                    'neighbor_diff': None, #(neighbor_diff_x, neighbor_diff_y),
         }
 
 class OverfitSoftLearner(L.LightningModule):
@@ -358,6 +465,7 @@ class OverfitSoftLearner(L.LightningModule):
         if self.model.border_handling in ["fourth_channel", "pad_feats"]:
             border_weights = outputs["out"][:, :, -1, None].detach()
             outputs["out"] = outputs["out"][:, :, :-1]
+            raise NotImplementedError
         else:
             border_weights = torch.ones_like(outputs["out"])
 
@@ -365,6 +473,7 @@ class OverfitSoftLearner(L.LightningModule):
             loss = criterion(outputs["out"]*outputs["pred_occ_mask"], 
                              outputs["loss_tgt"]*outputs["pred_occ_mask"],
                              self.cfg.model.charbonnier_flatness)
+            raise NotImplementedError
         else:
             loss = criterion(outputs["out"], outputs["loss_tgt"], self.cfg.model.charbonnier_flatness)
 
@@ -445,7 +554,25 @@ class OverfitSoftLearner(L.LightningModule):
                     if len(artifact.aliases) == 0:
                         artifact.delete()
 
-    def forward(self, batch, temp_lambda=1.):
+    def forward(self, batch, temp_lambda=1., old_forward=False, per_batch=False):
+        """
+        if per_batch and batch.frames.shape[1] > 1:
+            list_out = []
+            for i in range(batch.frames.shape[1]):
+                new_batch = deepcopy(batch)
+                for attr in Batch.stackables + Batch.optional_stackables:
+                    setattr(new_batch, attr, getattr(batch, attr)[:, i, None])
+                for attr in Batch.dictionaries:
+                    setattr(new_batch, attr, getattr(batch, attr)[i, None])
+                list_out.append(self.forward(new_batch, temp_lambda=temp_lambda, old_forward=False))
+            ret = list_out[0]
+            for out in list_out[1:]:
+                for k in out:
+                    if ret[k] is not None:
+                        ret[k] = torch.cat((ret[k], out[k]), dim=0)
+            return ret
+        """
+
         if self.inference_mode == "base":
             src_idx, tgt_idx = [2], [1]
         elif self.inference_mode == "three_frames":
@@ -461,6 +588,8 @@ class OverfitSoftLearner(L.LightningModule):
             temp = None
 
         if self.cfg.cost.pred_occ_mask == "3fb":
+            if old_forward:
+                raise NotImplementedError
             assert(self.inference_mode == "three_frames")
             with torch.no_grad():
                 outputs = self.model(batch,
@@ -470,10 +599,16 @@ class OverfitSoftLearner(L.LightningModule):
                 occ_mask = outputs["pred_occ_mask"].detach()
                 del outputs
 
-        outputs = self.model(batch,
-                             temp=temp,
-                             src_idx=src_idx,
-                             tgt_idx=tgt_idx)
+        if not old_forward:
+            outputs = self.model(batch,
+                                 temp=temp,
+                                 src_idx=src_idx,
+                                 tgt_idx=tgt_idx)
+        else:
+            outputs = self.model.old_forward(batch,
+                                 temp=temp,
+                                 src_idx=src_idx,
+                                 tgt_idx=tgt_idx)
 
         if self.cfg.cost.pred_occ_mask == "3fb":
             outputs["pred_occ_mask"] = occ_mask
@@ -489,21 +624,45 @@ class OverfitSoftLearner(L.LightningModule):
             opt.zero_grad()
 
         outputs = self(batch)
+        list_out = []
+        for i in range(batch.frames.shape[1]):
+            new_batch = deepcopy(batch)
+            for attr in Batch.stackables + Batch.optional_stackables:
+                setattr(new_batch, attr, getattr(batch, attr)[:, i, None])
+            for attr in Batch.dictionaries:
+                setattr(new_batch, attr, getattr(batch, attr)[i, None])
+            list_out.append(self.forward(new_batch))
+        loss_out = []
+        for out in list_out:
+            loss_out.append(self.loss(out, occ_mask=None))
+        """
+        a = []
+        for k in outputs:
+            if outputs[k] is not None:
+                #print(outputs[k], outputs_per[k], outputs[k].shape, outputs_per[k].shape, k)
+                print(k, torch.allclose(outputs[k], outputs_per[k]))
+                a.append(torch.allclose(outputs[k], outputs_per[k]))
+        assert(all(a))
+        """
         loss = self.loss(outputs, occ_mask=None)
+        print(loss, torch.mean(torch.Tensor(loss_out)))
+        assert(torch.allclose(loss, torch.mean(torch.Tensor(loss_out))))
+        with torch.no_grad():
+            flow = self(batch, old_forward=True)["flow"]
 
         B = batch.frames.shape[1]
         self.log('train/loss', loss, prog_bar=True)
         self.log_dict({
-            "train/flow_fwd_min": torch.min(outputs["flow"]),
-            "train/flow_fwd_max": torch.max(outputs["flow"]),
-            "train/flow_fwd_mean": torch.mean(outputs["flow"]),
-            "train/flow_fwd_std": torch.mean(torch.std(outputs["flow"], dim=(-1, -2))),
+            "train/flow_fwd_min": torch.min(flow),
+            "train/flow_fwd_max": torch.max(flow),
+            "train/flow_fwd_mean": torch.mean(flow),
+            "train/flow_fwd_std": torch.mean(torch.std(flow, dim=(-1, -2))),
         }, batch_size=B)
 
         if batch.flow is not None:
             gt_flow = batch.flow[0]
             epe = compute_epe(batch.flow[0], 
-                              outputs["flow"][:, 0], 
+                              flow[:, 0], 
                               scale_to=batch.frames_up.shape[3:])
 
             self.log('train/epe', epe, prog_bar=True)
@@ -534,15 +693,15 @@ class OverfitSoftLearner(L.LightningModule):
             print(f'Temperature ({self.temp}) is less than zero')
 
         with torch.no_grad():
-            outputs = self(batch) 
-            outputs_100 = self(batch, temp_lambda=100)
-            print(f'Max flow: {flow_max}, max pred flow: {torch.max(torch.abs(outputs["flow"]))}')
+            outputs = self(batch, old_forward=True) 
+            outputs_100 = self(batch, temp_lambda=100, old_forward=True)
 
             fwd_flow = outputs["flow"][:, 0]
             if self.inference_mode in ["three_frames", "bisided", "three_frames_bisided"]:
                 bwd_flow = outputs["flow"][:, 1]
             else:
                 bwd_flow = None
+            print(f'Max flow: {flow_max}, max pred flow: {torch.max(torch.abs(fwd_flow))}')
 
             if batch.flow is not None:
                 gt_flow = batch.flow[0]
@@ -655,7 +814,7 @@ class OverfitSoftLearner(L.LightningModule):
                         b.to(batch.frames[0].device)
                         if b.flow is None:
                             b.flow = self.do_raft_prediction(batch.frames_up[1], batch.frames_up[2])[None]
-                        return tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp)
+                        return tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp, model_fn=self.model.old_forward)
                     full_out = evaluation.evaluate_against(self.val_dataset, model_fwd, evaluation.get_smurf_fwd(self.val_dataset, device=batch.frames[0].device), cfg=self.cfg)
 
                     self.logger.log_image(key="FULL_random", images=[full_out["random"]])

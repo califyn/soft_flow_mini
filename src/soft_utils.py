@@ -184,7 +184,9 @@ def get_range(fil):
     fil_range = fil_range[..., t:-t, t:-t][:, :, None]
     return fil_range
 
-def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, out_key='flow', loss_fn=None, given_dim=1, do_att_map=True):
+def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, out_key='flow', loss_fn=None, given_dim=1, do_att_map=True, model_fn=None):
+    if model_fn is None:
+        model_fn = model
     # this could be a lot better in a lot of ways, but it should work for now
     H, W = batch.frames[0].shape[2], batch.frames[0].shape[3]
     assert(crop[0] <= H and crop[1] <= W)
@@ -244,21 +246,21 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, o
             cropped_batch = crop_batch_fn(batch, patch_crop)
             
             if out_key == 'flow':
-                out_flow = model(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
+                out_flow = model_fn(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
                 out_flow = out_flow["flow"][:, 0]
             elif out_key == 'pred_occ_mask':
-                out = model(cropped_batch, temp=temp, src_idx=[1], tgt_idx=[2])
+                out = model_fn(cropped_batch, temp=temp, src_idx=[1], tgt_idx=[2])
                 if out["pred_occ_mask"] is not None:
                     out_flow = 1. - out["pred_occ_mask"][:, 0].float()
                 else:
                     out_flow = torch.ones((out["flow"].shape[0], 1, out["flow"].shape[2], out["flow"].shape[3])).to(out["flow"].device)
                 if model.border_handling in ["pad_feats", "fourth_channel"]:
-                    out_border = model(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
+                    out_border = model_fn(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
                     border_weights = out_border["out"][:, 0, -1, None].detach()
                     border_weights = torch.gt(border_weights, torch.Tensor([0.5]).to(border_weights.device)).float()
                     out_flow = out_flow * border_weights
             elif out_key == 'given':
-               out_flow = model(cropped_batch)
+               out_flow = model_fn(cropped_batch)
             out_flow = get_estimate_fn(out_flow)
             
             estimate[..., x_region[0]:x_region[1], y_region[0]:y_region[1]] = out_flow
