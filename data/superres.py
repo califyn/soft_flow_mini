@@ -266,12 +266,22 @@ class SuperResDataset():
         if flow_orig is not None:
             assert(len(flow_orig) == 1)
             flow_mags = torch.linalg.norm(flow_orig[0], dim=0, keepdim=True)
+            flow_linf_mags = torch.linalg.norm(flow_orig[0], dim=0, keepdim=True, ord=float('inf'))
 
-            return {
-                "s0-10": flow_mags < 10,
-                "s10-40": torch.logical_and(flow_mags >= 10.0, flow_mags < 40.0),
-                "s40+": flow_mags >= 40.0
-            }
+            if self.eval_flow_max > 0:
+                return {
+                    "s0-10": flow_mags < 10,
+                    "s10-40": torch.logical_and(flow_mags >= 10.0, flow_mags < 40.0),
+                    "s40+": flow_mags >= 40.0,
+                    "valid": flow_linf_mags <= self.eval_flow_max,
+                    "invalid": flow_linf_mags > self.eval_flow_max,
+                }
+            else:
+                return {
+                    "s0-10": flow_mags < 10,
+                    "s10-40": torch.logical_and(flow_mags >= 10.0, flow_mags < 40.0),
+                    "s40+": flow_mags >= 40.0,
+                }
         else:
             return {}
 

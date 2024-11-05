@@ -7,7 +7,7 @@ wandb:
     entity: califyn
 model:
     inference_mode: three_frames
-    weight_sl: 31
+    weight_sl: 201
     downsample_factor: 1
     filter_zoom: 1
     smoothness: 0. #2.5e-1
@@ -32,7 +32,7 @@ cost:
     method: nn
     model: croco_dpt
     pred_occ_mask: null #3fb
-    both_sided: true
+    both_sided: false # true
 dataset:
     dataset: sintel
     train_split: training
@@ -45,8 +45,8 @@ dataset:
         random_crop: true
         color: false
         mask: false
-    flow_max: 15
-    eval_flow_max: 15
+    flow_max: -1 #50 #15
+    eval_flow_max: 100 #15 
     crop_to: 224,224
     use_feats: null
     num_workers: 7
@@ -55,7 +55,7 @@ training:
     data:
         batch_size: 1
         shuffle: true
-    overfit_batch: 0.0 #1 # 0.0 to turn off
+    overfit_batch: 0.0 # 0.0 to turn off # TOFIX
     lr: 2e-5
     high_lr: 3e-4
     high_lr_steps: 1000
@@ -63,9 +63,9 @@ training:
     weight_decay: 0.
     ckpt_every: 12500
 validation:
-    check_epoch: 10 #25
-    limit_batch: 64
-    check_interval: 1.0 #250
+    check_epoch: 1 #25
+    limit_batch: 128
+    check_interval: 1 #250
     full_val_every: 5000 #12500 #25000 
     data:
         batch_size: 1

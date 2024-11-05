@@ -38,15 +38,6 @@ def compute_epe(gt, pred, scale_to=None, mask=None):
         gt = torch.where(mask.to(bool), gt, torch.full_like(gt, float('nan')))
 
     u_gt, v_gt = gt[:,0,:,:], gt[:,1,:,:]
-    """
-    if scale_to is None:
-        pred = torch.nn.functional.upsample(pred, size=(h_gt, w_gt), mode='bilinear')
-    else:
-        pred = torch.nn.functional.upsample(pred, size=scale_to, mode='bilinear')
-        pred = torch.nn.functional.pad(pred, ((w_gt-scale_to[1])//2, (w_gt-scale_to[1]+1)//2, (h_gt-scale_to[0])//2, (h_gt-scale_to[0]+1)//2), mode='constant', value=float('nan'))
-    u_pred = pred[:,0,:,:] * (w_gt/w_pred)
-    v_pred = pred[:,1,:,:] * (h_gt/h_pred)
-    """
     u_pred = pred[:,0,:,:]
     v_pred = pred[:,1,:,:]
 
@@ -63,15 +54,6 @@ def compute_fl(gt, pred, scale_to=None, mask=None, reduce=True, mode='kitti'):
         gt = torch.where(mask.to(bool), gt, torch.full_like(gt, float('nan')))
 
     u_gt, v_gt = gt[:,0,:,:], gt[:,1,:,:]
-    """
-    if scale_to is None:
-        pred = torch.nn.functional.upsample(pred, size=(h_gt, w_gt), mode='bilinear')
-    else:
-        pred = torch.nn.functional.upsample(pred, size=scale_to, mode='bilinear')
-        pred = torch.nn.functional.pad(pred, ((w_gt-scale_to[1])//2, (w_gt-scale_to[1]+1)//2, (h_gt-scale_to[0])//2, (h_gt-scale_to[0]+1)//2), mode='constant', value=float('nan'))
-    u_pred = pred[:,0,:,:] * (w_gt/w_pred)
-    v_pred = pred[:,1,:,:] * (h_gt/h_pred)
-    """
     u_pred = pred[:,0,:,:]
     v_pred = pred[:,1,:,:]
 
@@ -122,7 +104,7 @@ def accumulate_metrics(dataset, model_fwd, cfg=None):
         metrics['fl_' + name] = []
         metrics['1px_' + name] = []
     if isinstance(dataset, SintelSuperResDataset):
-        primary_metric = 'epe'
+        primary_metric = 'epe' if 'epe_valid' not in metrics else 'epe_valid'
     elif isinstance(dataset, KITTISuperResDataset):
         primary_metric = 'fl'
     elif isinstance(dataset, SpringSuperResDataset):

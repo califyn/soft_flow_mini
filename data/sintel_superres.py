@@ -92,4 +92,6 @@ class SintelSuperResDataset(SuperResDataset):
                     self.mask_paths.append({
                         "occ": frame2_path.replace(dstype, "occlusions")
                     })
+
+        self.eval_flow_max = cfg.dataset.eval_flow_max
         print("Sintel Dataset:", dstype, self.split, len(self.frame_paths))

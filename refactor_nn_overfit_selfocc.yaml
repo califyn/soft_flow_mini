@@ -20,24 +20,23 @@ model:
     entropy: 0.0
     feat_dim: 64 #12 #32 #28 #128
     temp: 9 #0.1
-    temp_scheduling: false 
     charbonnier_flatness: 0.0 #1e-1
     fft_filter: null #butter #rect
     fft: 1e-1 #65,95 for rect
     border_handling: null
-    border_handling_on: -1
+    border_handling_on: -1 #10000000
     common_fate: 0.
     self_occ: false
 cost:
     method: nn
     model: croco_dpt
     pred_occ_mask: null #3fb
-    both_sided: true
+    both_sided: false
 dataset:
     dataset: sintel
-    train_split: training
+    train_split: validation
     val_split: validation
-    idx: 0 
+    idx: 0 #29 
     imsz: 1 
     imsz_super: 1
     dstype: clean
@@ -46,7 +45,6 @@ dataset:
         color: false
         mask: false
     flow_max: 15
-    eval_flow_max: 15
     crop_to: 224,224
     use_feats: null
     num_workers: 7
@@ -55,18 +53,18 @@ training:
     data:
         batch_size: 1
         shuffle: true
-    overfit_batch: 0.0 #1 # 0.0 to turn off
+    overfit_batch: 1
     lr: 2e-5
-    high_lr: 3e-4
-    high_lr_steps: 1000
-    temp_lr: 3e-4 #5e-2
+    high_lr: 2e-5
+    high_lr_steps: 0
+    temp_lr: 3e-3 #5e-2
     weight_decay: 0.
-    ckpt_every: 12500
+    ckpt_every: 1500 #12500
 validation:
-    check_epoch: 10 #25
-    limit_batch: 64
-    check_interval: 1.0 #250
-    full_val_every: 5000 #12500 #25000 
+    check_epoch: 10
+    limit_batch: 1
+    check_interval: 1
+    full_val_every: 10
     data:
         batch_size: 1
         shuffle: false

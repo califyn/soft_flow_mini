@@ -240,7 +240,7 @@ class SoftMultiFramePredictor(torch.nn.Module):
             return self.full_forward(batch, temp=temp, src_idx=src_idx, tgt_idx=tgt_idx, no_pad=no_pad)["flow"] # can fit the weights in memory
 
         if x_factor is None:
-            x_factor = 16
+            x_factor = 1
         if y_factor is None:
             y_factor = 1
 
@@ -522,9 +522,6 @@ class OverfitSoftLearner(L.LightningModule):
         elif self.inference_mode == "three_frames_bisided":
             self.src_idx, self.tgt_idx = [2, 0, 1, 1], [1, 1, 0, 2]
 
-        #if not hasattr(self, "so_temp"):
-        #    self.so_temp = torch.nn.Parameter(torch.Tensor([self.temp.item()*1.0]))#.to(batch.frames.device)
-
     def configure_optimizers(self):
         if self.cfg.cost.model == "croco_dpt":
             param_groups = get_parameter_groups(self.model.nn.head, weight_decay=0.05)
@@ -534,10 +531,6 @@ class OverfitSoftLearner(L.LightningModule):
 
         if self.temp is not None:
             temp_opt = torch.optim.Adam([self.temp], lr=self.cfg.training.temp_lr, weight_decay=self.cfg.training.weight_decay) # even if the LR is 0, it will move a little
-            if hasattr(self, "so_temp"):
-                temp_opt.add_param_group({"params": self.so_temp})
-            else:
-                self.so_temp = 0.
 
         if self.cfg.training.lr > 0:
             high_lr = self.cfg.training.high_lr/self.cfg.training.lr
@@ -697,10 +690,15 @@ class OverfitSoftLearner(L.LightningModule):
             fn = self.model.full_forward
         elif fn == 'pred_split':
             fn = self.model.pred_split
+            compare = self.model.full_forward(batch, temp=temp, src_idx=self.src_idx, tgt_idx=self.tgt_idx, so_temp=so_temp)
         outputs = fn(batch,
                      temp=temp,
                      src_idx=self.src_idx,
                      tgt_idx=self.tgt_idx, so_temp=so_temp)
+        if compare is not None:
+            print(compare["flow"].shape, outputs["flow"].shape)
+            assert(torch.allclose(compare["flow"], outputs["flow"]))
+            assert(torch.allclose(compare["out"], outputs["out"]))
 
         if self.cfg.cost.pred_occ_mask == "3fb":
             outputs["pred_occ_mask"] = occ_mask
@@ -708,6 +706,9 @@ class OverfitSoftLearner(L.LightningModule):
         return outputs
 
     def training_step(self, batch, batch_idx):
+        if not hasattr(self, "so_temp"):
+            self.so_temp = torch.nn.Parameter(torch.Tensor([self.temp.item()*1.0]).to(batch.frames.device))
+            self.get_optimizers()[1].add_param_group({"params": self.so_temp})
         if self.global_step > self.cfg.model.border_handling_on:
             self.model.border_handling = self.cfg.model.border_handling
 
@@ -812,7 +813,7 @@ class OverfitSoftLearner(L.LightningModule):
                 "val/mode_epe": mode_epe,
                 "val/occ_epe": occ_epe,
                 "temp": 0. if self.temp is None else torch.mean(self.temp),
-                "so_temp": 0. if self.so_temp is None else self.so_temp,
+                "so_temp": 0. if self.so_temp is None else torch.mean(self.so_temp),
             }, sync_dist=True, batch_size=B)
             print(f"Current epe: {epe}")
 
@@ -908,8 +909,8 @@ class OverfitSoftLearner(L.LightningModule):
                         b.to(batch.frames[0].device)
                         if b.flow is None:
                             b.flow = self.do_raft_prediction(batch.frames_up[1], batch.frames_up[2])[None]
-                        return tiled_pred(self.model, b, self.cfg.dataset.eval_flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp, model_fn=self.model.pred_split)
-                        #return tiled_pred(self.model, b, self.cfg.dataset.eval_flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp, model_fn=self.model.full_forward)
+                        #return tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp, model_fn=self.model.pred_split)
+                        return tiled_pred(self.model, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp, model_fn=self.model.full_forward)
                     full_out = evaluation.evaluate_against(self.val_dataset, model_fwd, evaluation.get_smurf_fwd(self.val_dataset, device=batch.frames[0].device), cfg=self.cfg)
 
                     self.logger.log_image(key="FULL_random", images=[full_out["random"]])
@@ -938,7 +939,7 @@ class OverfitSoftLearner(L.LightningModule):
 
                             return torch.cat([src_feats[:, :, t_patch:-t_patch, t_patch:-t_patch], tgt_feats[:, :, t_patch:-t_patch, t_patch:-t_patch]], dim=1)
 
-                        occ = tiled_pred(get_dprod, b, self.cfg.dataset.eval_flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp, out_key='given', loss_fn=self.loss, given_dim=self.cfg.model.feat_dim * 2)
+                        occ = tiled_pred(get_dprod, b, self.cfg.dataset.flow_max, lambda x, y: self.val_dataset.crop_batch(x, crop=y), crop=(224, 224), temp=self.temp, out_key='given', loss_fn=self.loss, given_dim=self.cfg.model.feat_dim * 2)
 
                         if b.flow is None:
                             b.flow = self.do_raft_prediction(batch.frames_up[1], batch.frames_up[2])[None]

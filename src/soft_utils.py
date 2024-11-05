@@ -240,15 +240,19 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, o
         estimate = torch.full_like(batch.flow[0][:, 0, None], float('nan'))
     elif out_key == 'given':
         estimate = torch.full_like(batch.flow[0][:, 0, None], float('nan')).repeat(1, given_dim, 1, 1)
-    for x_region in zip(x_idxs[:-1], x_idxs[1:]):
-        for y_region in zip(y_idxs[:-1], y_idxs[1:]):
+    for i, x_region in enumerate(zip(x_idxs[:-1], x_idxs[1:])):
+        for j, y_region in enumerate(zip(y_idxs[:-1], y_idxs[1:])):
             patch_crop, get_estimate_fn = generate_crop_from_region(*x_region, *y_region)
             cropped_batch = crop_batch_fn(batch, patch_crop)
             
             if out_key == 'flow':
-                out_flow = model_fn(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1])
+                if i == 0 or i == len(x_idxs) - 2 or j == 0 or j == len(y_idxs) - 2: # border cases
+                    out_flow = model_fn(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1], so_temp=temp)
+                else:
+                    out_flow = model_fn(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1], so_temp=temp, no_pad=True)
                 out_flow = out_flow["flow"][:, 0]
             elif out_key == 'pred_occ_mask':
+                raise ValueError
                 out = model_fn(cropped_batch, temp=temp, src_idx=[1], tgt_idx=[2])
                 if out["pred_occ_mask"] is not None:
                     out_flow = 1. - out["pred_occ_mask"][:, 0].float()
@@ -264,6 +268,7 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, o
             out_flow = get_estimate_fn(out_flow)
             
             estimate[..., x_region[0]:x_region[1], y_region[0]:y_region[1]] = out_flow
+    assert(not torch.any(torch.isnan(estimate)))
 
     if estimate.shape[1] > 5 and do_att_map:
         query_idx = estimate.shape[2] // 2, int(round(estimate.shape[3] * 0.35)) #estimate.shape[3] // 2#
