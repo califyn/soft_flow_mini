@@ -560,7 +560,6 @@ class HalfUnet(Module):
     def __init__(
         self,
         dim,
-        laplacian_layer,
         init_dim = None,
         out_dim = None,
         dim_mults = (1, 2, 4, 8),
@@ -627,12 +626,10 @@ class HalfUnet(Module):
                 resnet_block(dim_in, dim_in),
                 attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
 				nn.Conv2d(dim_in, dim_out, 3, padding=1),
-                laplacian_layer(dim_out),
             ]))
 
         self.final_res_block = resnet_block(dims[-1] + init_dim, init_dim)
         self.final_conv = nn.Conv2d(init_dim, self.out_dim, 1)
-        self.final_laplacian = laplacian_layer(out_dim)
 
     def forward(self, x, x_self_cond = None, eigs=None):
         if self.self_condition:
@@ -641,9 +638,9 @@ class HalfUnet(Module):
 
         x = self.init_conv(x)
         r = x.clone()
-        loss = 0
+        #loss = 0
 
-        for block1, block2, attn, conv, laplacian in self.downs:
+        for block1, block2, attn, conv in self.downs:
             x_ = x.clone()
             x = block1(x)
 
@@ -651,14 +648,15 @@ class HalfUnet(Module):
             x = attn(x) + x_ # originally just x
             
             x = conv(x)
-            x, l = laplacian(x, eigs)
-            loss += l
+            #x, l = laplacian(x, eigs)
+            #loss += l
 
         x = torch.cat((x, r), dim = 1)
 
         x = self.final_res_block(x)
         x = self.final_conv(x)
-        ret, l = self.final_laplacian(x, eigs)
-        loss += l
+        #ret, l = self.final_laplacian(x, eigs)
+        #loss += l
 
-        return ret, loss
+        return x
+        #return ret#, loss

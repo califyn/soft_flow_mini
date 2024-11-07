@@ -249,7 +249,8 @@ def tiled_pred(model, batch, flow_max, crop_batch_fn, crop=(224, 224), temp=9, o
                 if i == 0 or i == len(x_idxs) - 2 or j == 0 or j == len(y_idxs) - 2: # border cases
                     out_flow = model_fn(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1], so_temp=temp)
                 else:
-                    out_flow = model_fn(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1], so_temp=temp, no_pad=True)
+                    #out_flow = model_fn(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1], so_temp=temp, no_pad=True)
+                    out_flow = model_fn(cropped_batch, temp=temp, src_idx=[2], tgt_idx=[1], so_temp=temp)
                 out_flow = out_flow["flow"][:, 0]
             elif out_key == 'pred_occ_mask':
                 raise ValueError

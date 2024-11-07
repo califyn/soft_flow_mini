@@ -27,12 +27,12 @@ model:
     border_handling: null
     border_handling_on: -1
     common_fate: 0.
-    self_occ: false
+    self_occ: false #true # false # TOFIX
 cost:
     method: nn
     model: croco_dpt
     pred_occ_mask: null #3fb
-    both_sided: true
+    both_sided: false #true
 dataset:
     dataset: sintel
     train_split: training
@@ -63,10 +63,10 @@ training:
     weight_decay: 0.
     ckpt_every: 12500
 validation:
-    check_epoch: 10 #25
+    check_epoch: 1 #0 25
     limit_batch: 64
-    check_interval: 1.0 #250
-    full_val_every: 5000 #12500 #25000 
+    check_interval: 1.0 #2 #250
+    full_val_every: null #5000 #12500 #25000 
     data:
         batch_size: 1
         shuffle: false
