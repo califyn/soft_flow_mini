@@ -1,5 +1,5 @@
 import torch.distributions as dist
-import torch
+import torch 
 from .soft_utils import warp_previous_flow, pad_for_filter, downsample_filter
 from tqdm import tqdm
 
@@ -37,8 +37,10 @@ def full_temporal_smoothness_loss(weights, past=None):
 
 def spatial_smoothness_loss(weights, image=None, occ_mask=None, edge_weight=1.0):
     # Calculate the gradient along the height and width dimensions
-    grad_height = weights[:, :, 1:, :, :, :] - weights[:, :, :-1, :, :, :]
-    grad_width = weights[:, :, :, 1:, :, :] - weights[:, :, :, :-1, :, :]
+    #grad_height = weights[..., 1:, :, :, :] - weights[..., :-1, :, :, :]
+    #grad_width = weights[..., :, 1:, :, :] - weights[..., :, :-1, :, :]
+    grad_height = weights[..., 1:, :, :, 1:] - weights[..., :-1, :, :, :-1]
+    grad_width = weights[..., :, 1:, 1:, :] - weights[..., :, :-1, :-1, :]
 
     # Edgeaware
     if image is not None:

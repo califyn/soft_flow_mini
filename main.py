@@ -32,10 +32,10 @@ def run(cfg: DictConfig):
     print("CUDA is available:", torch.cuda.is_available(), flush=True)
     # Set up dataset and dataloader
     if cfg.dataset.dataset == "sintel":
-        #flow_max = cfg.dataset.flow_max
-        #cfg.dataset.flow_max = -100
+        flow_max = cfg.dataset.flow_max
+        cfg.dataset.flow_max = -100
         train_dataset = SintelSuperResDataset(cfg, cfg.dataset.train_split)
-        #cfg.dataset.flow_max = flow_max
+        cfg.dataset.flow_max = flow_max
         val_dataset = SintelSuperResDataset(cfg, cfg.dataset.val_split, is_val=True)
     elif cfg.dataset.dataset == "llff":
         train_dataset = LLFFSuperResDataset(cfg, cfg.dataset.train_split)
@@ -56,7 +56,7 @@ def run(cfg: DictConfig):
                 train_dataset,
                 batch_size=cfg.training.data.batch_size,
                 num_workers=cfg.dataset.num_workers,
-                shuffle=False,
+                shuffle=True,
                 collate_fn=Batch.collate_fn,
                 pin_memory=True,
             )

@@ -103,7 +103,8 @@ def pad_for_filter(in_frames, weight_sl, downsample_factor, border_fourth_channe
             in_frames_fourth = in_frames.new_ones(tuple(in_shape_fourth))
 
         in_frames_reshaped = torch.reshape(in_frames, (in_frames.shape[0] * in_frames.shape[1], *in_frames.shape[2:]))
-        x_padded = F.pad(in_frames_reshaped, (t, t, t, t), mode='replicate')
+        #x_padded = F.pad(in_frames_reshaped, (t, t, t, t), mode='replicate')
+        x_padded = F.pad(in_frames_reshaped, (t, t, t, t), mode='constant', value=0)
         if border_fourth_channel:
             in_frames_fourth_reshaped = torch.reshape(in_frames_fourth, (in_frames_fourth.shape[0] * in_frames_fourth.shape[1], *in_frames_fourth.shape[2:]))
             x_padded_fourth = F.pad(in_frames_fourth_reshaped, (t, t, t, t), mode='constant', value=0)
